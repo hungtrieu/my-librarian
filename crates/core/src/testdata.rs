@@ -344,7 +344,10 @@ pub fn generate_sample(dir: &Path) -> std::io::Result<Sample> {
     std::fs::create_dir_all(&inbox)?;
     std::fs::copy(vh.join("Mắt Biếc.epub"), inbox.join("Mắt Biếc (1).epub"))?; // trùng chắc chắn
     n += 1;
-    count!(write_pdf(&inbox.join("Mat Biec.pdf"), None, None, "ban scan khac")); // nghi trùng (tên)
+    // Cùng tên với "Mắt Biếc.epub" nhưng khác định dạng → một tác phẩm nhiều định dạng, KHÔNG phải nghi trùng.
+    count!(write_pdf(&inbox.join("Mat Biec.pdf"), None, None, "ban scan khac"));
+    // Cùng tên, cùng định dạng với "Truyện Kiều.pdf", nội dung khác → nghi trùng.
+    count!(write_pdf(&inbox.join("Truyen Kieu - ban in.pdf"), Some("Truyện Kiều"), Some("Nguyễn Du"), "ban in khac"));
     count!(write_epub(
         &inbox.join("Ngày xưa có một chuyện tình.epub"),
         &EpubSpec {

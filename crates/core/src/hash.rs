@@ -4,7 +4,7 @@ use crate::db::now;
 use crate::error::Result;
 use crate::{OnStep, Step};
 use rayon::prelude::*;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -116,42 +116,9 @@ pub fn ensure_hashes_with(
         |r| r.get::<_, i64>(0),
     )? as usize;
 
-    let total = need_quick.len();
-    report("hash_quick", 0, total);
-    let mut done = 0;
-    for chunk in need_quick.chunks(threads.max(1) * 4) {
-        if cancelled() {
-            stats.cancelled = true;
-            return Ok(stats);
-        }
-        let results: Vec<_> = pool.install(|| {
-            chunk
-                .par_iter()
-                .map(|(id, p, size, mtime)| {
-                    crate::progress::working_on(Path::new(p));
-                    let r = quick_hash(Path::new(p)).map_err(|e| e.to_string());
-                    crate::progress::pulse();
-                    (*id, p, *size, *mtime, r)
-                })
-                .collect()
-        });
-        let tx = conn.unchecked_transaction()?;
-        for (id, p, size, mtime, r) in results {
-            match r {
-                Ok(q) => {
-                    tx.execute(
-                        "UPDATE books SET quick_hash = ?2, full_hash = NULL, hash_size = ?3, hash_mtime = ?4,
-                         updated_at = ?5 WHERE id = ?1",
-                        params![id, q, size, mtime, now()],
-                    )?;
-                    stats.quick_hashed += 1;
-                }
-                Err(e) => stats.errors.push((p.clone(), e)),
-            }
-        }
-        tx.commit()?;
-        done += chunk.len();
-        report("hash_quick", done, total);
+    if !quick_batches(conn, &pool, &need_quick, threads, cancel, "hash_quick", on, &mut stats)? {
+        stats.cancelled = true;
+        return Ok(stats);
     }
 
     // Tầng 2: cùng (dung lượng, băm nhanh) → SHA-256 đầy đủ.
@@ -193,7 +160,7 @@ pub fn ensure_hashes_with(
                 })
                 .collect()
         });
-        let tx = conn.unchecked_transaction()?;
+        let tx = crate::db::write_tx(conn)?;
         for (id, p, size, r) in results {
             match r {
                 Ok(h) => {
@@ -216,6 +183,94 @@ pub fn ensure_hashes_with(
         stats.cancelled = true;
     }
     Ok(stats)
+}
+
+/// Băm nhanh `items` (id, đường dẫn, dung lượng, mtime) song song theo lô, **ghi DB sau mỗi lô** và báo tiến
+/// trình `phase` x / y. Trả về `false` nếu bị huỷ giữa chừng (các lô đã xong vẫn được lưu).
+#[allow(clippy::too_many_arguments)]
+fn quick_batches(
+    conn: &Connection,
+    pool: &rayon::ThreadPool,
+    items: &[(i64, String, i64, i64)],
+    threads: usize,
+    cancel: Option<&AtomicBool>,
+    phase: &'static str,
+    on: Option<OnStep>,
+    stats: &mut HashStats,
+) -> Result<bool> {
+    let report = |done: usize, total: usize| {
+        if let Some(f) = on {
+            f(Step { phase, done, total });
+        }
+    };
+    let total = items.len();
+    report(0, total);
+    let mut done = 0;
+    for chunk in items.chunks(threads.max(1) * 4) {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Ok(false);
+        }
+        let results: Vec<_> = pool.install(|| {
+            chunk
+                .par_iter()
+                .map(|(id, p, size, mtime)| {
+                    crate::progress::working_on(Path::new(p));
+                    let r = quick_hash(Path::new(p)).map_err(|e| e.to_string());
+                    crate::progress::pulse();
+                    (*id, p, *size, *mtime, r)
+                })
+                .collect()
+        });
+        let tx = crate::db::write_tx(conn)?;
+        for (id, p, size, mtime, r) in results {
+            match r {
+                Ok(q) => {
+                    tx.execute(
+                        "UPDATE books SET quick_hash = ?2, full_hash = NULL, hash_size = ?3, hash_mtime = ?4,
+                         updated_at = ?5 WHERE id = ?1",
+                        params![id, q, size, mtime, now()],
+                    )?;
+                    stats.quick_hashed += 1;
+                }
+                Err(e) => stats.errors.push((p.clone(), e)),
+            }
+        }
+        tx.commit()?;
+        done += chunk.len();
+        report(done, total);
+    }
+    Ok(true)
+}
+
+/// Đảm bảo các sách `ids` có băm nhanh còn hợp lệ (khớp size/mtime): chỉ băm phần còn thiếu – song song, ghi DB
+/// theo lô, báo tiến trình `phase`. Huỷ giữa chừng thì phần đã băm vẫn được lưu, lần sau chỉ băm phần còn lại.
+/// Trả về `false` nếu bị huỷ.
+pub fn ensure_quick_many(
+    conn: &Connection,
+    ids: &[i64],
+    threads: usize,
+    cancel: Option<&AtomicBool>,
+    phase: &'static str,
+    on: Option<OnStep>,
+) -> Result<bool> {
+    let mut need: Vec<(i64, String, i64, i64)> = Vec::new();
+    {
+        let mut st = conn.prepare(
+            "SELECT path, size, mtime FROM books
+             WHERE id = ?1 AND (quick_hash IS NULL OR hash_size IS NOT size OR hash_mtime IS NOT mtime)",
+        )?;
+        for id in ids {
+            crate::progress::pulse();
+            if let Some((p, s, m)) = st
+                .query_row([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+                .optional()?
+            {
+                need.push((*id, p, s, m));
+            }
+        }
+    }
+    let mut stats = HashStats::default();
+    quick_batches(conn, &pool(threads), &need, threads, cancel, phase, on, &mut stats)
 }
 
 /// Băm nhanh theo yêu cầu (vd. cho thành viên nhóm nghi trùng chưa có băm), lưu lại DB.

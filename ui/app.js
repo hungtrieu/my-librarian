@@ -161,7 +161,11 @@ function progressText(p) {
     case 'triage_clean': return { text: `Đang dọn thư mục rỗng trong hộp thư đến ${of('mục')}`, pct };
     case 'hash_quick': return { text: `Đang băm nhanh ${of('file')}`, pct };
     case 'hash_full': return { text: `Đang băm đầy đủ ${of('file')}`, pct };
-    case 'analyze': return { text: `Đang phân tích trùng & thể loại (${p.done || 0} / ${p.total || 4} phần)`, pct };
+    case 'suspect_hash': return { text: `Đang băm bổ sung để tìm nghi trùng ${of('file')}`, pct };
+    case 'analyze': {
+      const part = ['tìm trùng chắc chắn', 'dọn trùng chắc chắn', 'tìm nghi trùng', 'đề xuất thể loại'][p.done || 0] || 'hoàn tất';
+      return { text: `Đang phân tích: ${part} (phần ${Math.min((p.done || 0) + 1, p.total || 4)} / ${p.total || 4})`, pct };
+    }
     case 'count': return { text: `Đang liệt kê file… ${n(p.done)} file`, pct: null };
     case 'recover': return { text: `Đang nhận lại sách đã chuyển chỗ ${of('sách')}`, pct };
     case 'scan': return { text: !p.total && !p.done ? 'Đang liệt kê file…' : `Đang quét… ${of('file')}`, pct };
@@ -204,6 +208,17 @@ api.listen('close-requested', async () => {
   if (!ok) return;
   S.quitting = true; renderScanBox();
   call('quit_app').catch(fail);
+});
+
+// Số liệu báo cáo vừa được tính lại ở nền lúc mở app: cập nhật badge / banner (quét đang chạy thì để scan-done lo).
+api.listen('stats-updated', async () => {
+  if (S.scanning) return;
+  try {
+    const ov = await call('overview');
+    S.ov = { ...ov, notice: null }; // thông báo khôi phục (nếu có) đã hiện lúc mở app
+    renderNav();
+    renderBanner();
+  } catch (e) { /* lần tải sau sẽ đúng */ }
 });
 
 api.listen('scan-health', (e) => { if (!S.scanning) return; S.health = e.payload; renderScanBox(); });
@@ -309,7 +324,11 @@ class Grid {
   loadedItems() { const out = []; for (let i = 0; i < (this.total || 0); i++) { const it = this.item(i); if (it) out.push(it); } return out; }
 }
 
-const key = (it) => (it.kind === 'series' ? `s:${it.category ?? ''}|${it.series}` : `b:${it.id}`);
+const key = (it) => (it.kind !== 'series' ? `b:${it.id}` : it.work ? `w:${it.work}` : `s:${it.category ?? ''}|${it.series}`);
+/** Nhãn định dạng của ô tác phẩm, vd. "EPUB · MOBI · PDF". */
+const fmtList = (it) => (it.formats || []).map((f) => f.toUpperCase()).join(' · ');
+/** Ảnh bìa đại diện của một ô bộ / tác phẩm: dùng đúng định dạng của bản chính để lấy bìa. */
+const groupCoverBook = (it) => ({ id: it.cover_book_id, format: it.work ? it.formats[0] : 'cbz', mtime: 0, title: it.series, authors: it.authors });
 
 function coverFor(b, title, authors) {
   const url = coverUrl(b);
@@ -322,6 +341,15 @@ function coverFor(b, title, authors) {
 
 /** Một dòng của chế độ danh sách: bìa nhỏ, tên, tác giả, định dạng, thư mục, tiến độ đọc. */
 function listRow(it) {
+  if (it.kind === 'series' && it.work) {
+    const st = it.continue_book_id ? 'Đang đọc' : it.read ? 'Đã đọc' : fmtBytes(it.size);
+    return [h('div', { class: 'thumb' }, coverFor(groupCoverBook(it), it.series, it.authors)),
+      h('div', { class: 'c-title' }, h('span', { class: 't' }, highlight(it.series, S.q)), h('span', { class: 'tag', title: 'Một tác phẩm, nhiều định dạng' }, `${it.formats.length} định dạng`)),
+      h('div', { class: 'c-author' }, highlight(it.authors || '—', S.q)),
+      h('div', { class: 'c-fmt', title: fmtList(it) }, fmtList(it)),
+      h('div', { class: 'c-dir' }, it.category || '—'),
+      h('div', { class: 'c-prog' }, h('span', { class: it.read || it.continue_book_id ? '' : 'muted' }, st))];
+  }
   if (it.kind === 'series') {
     const fake = { id: it.cover_book_id, format: 'cbz', mtime: 0, title: it.series, authors: it.authors };
     return [h('div', { class: 'thumb' }, coverFor(fake, it.series, it.authors)),
@@ -350,7 +378,12 @@ function card(it, i) {
     return wireCard(el, it, i);
   }
   let cover, title, author, state;
-  if (it.kind === 'series') {
+  if (it.kind === 'series' && it.work) {
+    cover = h('div', { style: 'position:relative;width:100%;max-height:100%;display:flex;align-items:flex-end' },
+      coverFor(groupCoverBook(it), it.series, it.authors), h('span', { class: 'vol-badge', title: 'Một tác phẩm, nhiều định dạng' }, `${it.formats.length} định dạng`));
+    title = it.series; author = it.authors || '—';
+    state = h('div', { class: 'state' }, it.continue_book_id ? 'Đang đọc · ' + fmtList(it) : it.read ? 'Đã đọc · ' + fmtList(it) : fmtList(it) + ' · ' + fmtBytes(it.size));
+  } else if (it.kind === 'series') {
     const fake = { id: it.cover_book_id, format: 'cbz', mtime: 0, title: it.series, authors: it.authors };
     cover = h('div', { class: 'stack' }, coverFor(fake, it.series, it.authors), h('span', { class: 'vol-badge' }, `${it.volumes} vol`));
     title = it.series; author = it.authors || it.category || '';
@@ -396,7 +429,7 @@ function dragBegin() {
   const items = grid ? grid.loadedItems().filter((x) => S.sel.has(key(x))) : [drag.it];
   const books = items.reduce((s, x) => s + (x.kind === 'series' ? x.volumes : 1), 0) + (S.sel.size - items.length);
   const it = drag.it;
-  const cv = it.kind === 'series' ? coverFor({ id: it.cover_book_id, format: 'cbz', mtime: 0 }, it.series, it.authors) : coverFor(it);
+  const cv = it.kind === 'series' ? coverFor(groupCoverBook(it), it.series, it.authors) : coverFor(it);
   drag.ghost = h('div', { class: 'drag-ghost', 'aria-hidden': 'true' },
     h('div', { class: 'thumb' }, cv),
     h('div', { class: 'txt' }, h('b', {}, books > 1 ? `${books.toLocaleString('vi-VN')} quyển` : it.title), h('span', {}, 'Thả vào một thư mục ở sidebar')),
@@ -506,6 +539,7 @@ function select(it, i, e) {
 }
 
 async function openItem(it) {
+  if (it.kind === 'series' && it.work) return read(it.continue_book_id ?? it.cover_book_id);
   if (it.kind === 'series') return go({ name: 'series', category: it.category, series: it.series, notWorth: inNotWorth() });
   return read(it.id);
 }
@@ -543,8 +577,28 @@ async function openExternal(id) {
   try { await call('open_external', { id }); } catch (e) { fail(e); }
 }
 
+/** Màn chi tiết một tác phẩm: liệt kê từng định dạng (mở / xoá / gửi riêng từng file). */
+function openWork(it) {
+  const back = S.view.name === 'series' ? S.view.back : S.view;
+  go({ name: 'series', work: it.work, category: it.category, series: it.series, notWorth: inNotWorth(), back });
+}
+
 function itemMenu(x, y, it) {
   const n = S.sel.size;
+  if (it.kind === 'series' && it.work) {
+    return showMenu(x, y, [
+      { label: `Đọc (${it.formats[0].toUpperCase()})`, run: () => openItem(it) },
+      { label: `Xem ${it.formats.length} định dạng (${fmtList(it)})`, run: () => openWork(it) },
+      { label: 'Hiện trong thư mục', run: () => call('reveal', { id: it.cover_book_id }).catch(fail) },
+      '-',
+      ...sendItems(n),
+      { label: 'Đánh dấu đã đọc', run: () => markRead('read') },
+      { label: 'Đánh dấu chưa đọc', run: () => markRead('unread') },
+      notWorthItem(n, false),
+      { label: n > 1 ? `Chuyển ${n} mục vào thư mục…` : 'Chuyển mọi định dạng vào thư mục…', run: moveSelection },
+      '-', { label: n > 1 ? `Xoá ${n} mục vào Thùng rác…` : `Xoá cả ${it.volumes} file vào Thùng rác…`, danger: true, run: deleteSelection },
+    ].filter(Boolean));
+  }
   if (it.kind === 'series') {
     return showMenu(x, y, [
       { label: 'Mở bộ', run: () => openItem(it) },
@@ -594,6 +648,9 @@ async function selectedBooks() {
     if (k.startsWith('b:')) {
       const it = grid?.loadedItems().find((x) => key(x) === k);
       if (it) out.push(it); else { const b = await call('book', { id: +k.slice(2) }); if (b) out.push(b); }
+    } else if (k.startsWith('w:')) {
+      const r = await call('query', { q: { work: k.slice(2), not_worth: inNotWorth(), limit: 100000 } });
+      out.push(...r.items);
     } else {
       const [cat, series] = k.slice(2).split('|');
       const r = await call('query', { q: { series, category: cat || null, not_worth: inNotWorth(), limit: 100000 } });
@@ -697,6 +754,7 @@ async function undo(id) {
 // ------------------------------------------------------------------ màn thư viện
 function libraryQuery() {
   const v = S.view, base = { q: S.q || null, sort: S.sort, format: S.format || null, read_status: S.readStatus || null };
+  if (v.name === 'series' && v.work) return { ...base, format: null, work: v.work, sort: 'relevance', not_worth: !!v.notWorth };
   if (v.name === 'series') return { ...base, series: v.series, category: v.category ?? '', sort: 'relevance', not_worth: !!v.notWorth };
   switch (v.scope) {
     case 'reading': return { ...base, read_status: 'reading', sort: S.q ? S.sort : 'recent_read' };
@@ -732,14 +790,18 @@ async function renderLibrary() {
   tools.push(layoutToggle(), h('button', { class: 'btn', id: 'refresh-btn', title: 'Quét lại thư viện, chỉ đọc file mới hoặc đã đổi (F5)', disabled: S.scanning, onclick: startScan }, S.scanning ? 'Đang làm mới…' : '⟳ Làm mới'));
   toolbar(libraryTitle(), '', ...tools);
   const host = h('div', { class: 'pad' });
-  if (S.view.name === 'series') {
+  if (S.view.name === 'series' && S.view.work) {
+    host.append(h('div', { style: 'display:flex;gap:8px;margin:2px 0 14px' },
+      h('button', { class: 'btn small', onclick: () => go(S.view.back || { name: 'library', scope: 'all' }) }, '‹ Quay lại'),
+      h('span', { class: 'muted small', style: 'align-self:center' }, 'Một tác phẩm, nhiều định dạng' + (S.view.category ? ` · ${S.view.category}` : ''))));
+  } else if (S.view.name === 'series') {
     host.append(h('div', { style: 'display:flex;gap:8px;margin:2px 0 14px' },
       h('button', { class: 'btn small', onclick: () => go({ name: 'library', scope: S.view.notWorth ? 'not_worth' : 'series' }) }, S.view.notWorth ? '‹ Không đáng đọc' : '‹ Bộ truyện'),
       h('span', { class: 'muted small', style: 'align-self:center' }, S.view.category || '')));
   }
   view.replaceChildren(host);
   await reloadGrid(host);
-  if (S.view.name === 'series' && grid) {
+  if (S.view.name === 'series' && !S.view.work && grid) {
     // "Đọc tiếp": vol đang đọc dở, hoặc vol ngay sau vol đã đọc cuối cùng.
     const vols = (await Promise.all([...Array(Math.ceil((grid.total || 0) / PAGE)).keys()].map((p) => grid.fetch(p)))).flat();
     const last = vols.map((b) => b.read_status).lastIndexOf('read');

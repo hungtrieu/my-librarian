@@ -109,7 +109,7 @@ pub struct QueueResult {
 pub fn queue_add(conn: &Connection, ids: &[i64], devices: &[i64]) -> Result<QueueResult> {
     let mut res = QueueResult::default();
     let now = db::now();
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     let mut kinds = Vec::new();
     for &d in devices {
         let k: Option<String> = tx.query_row("SELECT kind FROM devices WHERE id = ?1", [d], |r| r.get(0)).optional()?;
@@ -234,7 +234,7 @@ pub fn on_device_ids(conn: &Connection) -> Result<Vec<i64>> {
 /// đúng các cuốn được hỏi (cuốn không còn trong thư viện bị bỏ qua).
 pub fn merge_marks(conn: &Connection, marks: &[WorthMark]) -> Result<Vec<WorthMark>> {
     let now = db::now();
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     let mut out = Vec::with_capacity(marks.len());
     for m in marks {
         let Some((nw, at)) = tx

@@ -125,7 +125,7 @@ pub fn apply_moves(conn: &Connection, cfg: &Config, reqs: &[MoveRequest], kind: 
         let dst = unique_dest(&r.target_dir, &b.file_name);
         match move_file(&src, &dst) {
             Ok(()) => {
-                let tx = conn.unchecked_transaction()?;
+                let tx = crate::db::write_tx(conn)?;
                 scan::relocate(&tx, cfg, b.id, &dst)?;
                 if let Ok(m) = std::fs::metadata(&dst) {
                     let mt = m.modified().map(mtime_ms).unwrap_or(b.mtime);
@@ -214,7 +214,7 @@ pub fn undo_batch(conn: &Connection, cfg: &Config, batch_id: i64) -> Result<Undo
         }
         match move_file(&dstp, &srcp) {
             Ok(()) => {
-                let tx = conn.unchecked_transaction()?;
+                let tx = crate::db::write_tx(conn)?;
                 if let Some(id) = book_id {
                     scan::relocate(&tx, cfg, id, &srcp)?;
                 }

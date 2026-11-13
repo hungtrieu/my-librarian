@@ -18,6 +18,7 @@ use crate::normalize::{fold, simple_key};
 use crate::trash::Trasher;
 use crate::OnStep;
 use crate::Step;
+use rayon::prelude::*;
 use regex::Regex;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -335,23 +336,28 @@ fn compiled() -> &'static Vec<CompiledRule> {
 
 /// Điểm từng thể loại: tag ×3, tiêu đề/mô tả ×2, đường dẫn thư mục ×1.
 fn score(subjects: &str, title: &str, path: &str) -> Vec<(&'static RuleDef, f64)> {
-    let fields = [(3.0, subjects), (2.0, title), (1.0, path)];
+    // Chuẩn hoá mỗi trường một lần (không phải một lần cho mỗi luật): (trọng số, có dấu, bỏ dấu) – thường và
+    // bản đã bỏ các cụm "tuổi thơ"… cho luật Thơ.
+    let fields: Vec<(f64, [(String, String); 2])> = [(3.0, subjects), (2.0, title), (1.0, path)]
+        .into_iter()
+        .filter(|(_, text)| !text.trim().is_empty())
+        .map(|(w, text)| {
+            let t = nfc_lower(text);
+            let mut tp = t.clone();
+            for p in NOT_POETRY {
+                tp = tp.replace(p, " ");
+            }
+            let (f, fp) = (fold(&t), fold(&tp));
+            (w, [(t, f), (tp, fp)])
+        })
+        .collect();
     let mut out = Vec::new();
     for r in compiled() {
         let mut s = 0.0;
-        for (w, text) in fields {
-            if text.trim().is_empty() {
-                continue;
-            }
-            let mut t = nfc_lower(text);
-            if r.def.name == "Thơ" {
-                for p in NOT_POETRY {
-                    t = t.replace(p, " ");
-                }
-            }
-            let f = fold(&t);
-            if r.diac.as_ref().is_some_and(|re| re.is_match(&t)) || r.folded.as_ref().is_some_and(|re| re.is_match(&f))
-            {
+        let variant = usize::from(r.def.name == "Thơ");
+        for (w, forms) in &fields {
+            let (t, f) = &forms[variant];
+            if r.diac.as_ref().is_some_and(|re| re.is_match(t)) || r.folded.as_ref().is_some_and(|re| re.is_match(f)) {
                 s += w * r.def.mult;
             }
         }
@@ -399,6 +405,123 @@ fn read_opf(path: &Path) -> (String, String, String) {
 
 fn ext_of(p: &Path) -> String {
     p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
+}
+
+/// File đi kèm mang đuôi giống sách nhưng không phải sách: mô tả trang tải kèm theo (`description.txt`),
+/// metadata Kindle (`metadata.kfx`), file ẩn (`.progress.txt`). Coi là sách thì mỗi thư mục Calibre thành hai
+/// "tác phẩm" (mất tag của `metadata.opf`) và hàng nghìn `description (n).txt` dồn vào `Khác`.
+fn is_sidecar(p: &Path) -> bool {
+    let name = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let stem = p.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+    name.starts_with('.') || matches!(stem.as_str(), "description" | "metadata")
+}
+
+fn is_book(p: &Path) -> bool {
+    BOOK_EXT.contains(&ext_of(p).as_str()) && !is_sidecar(p)
+}
+
+/// Luồng đọc hộp thư đến song song: ổ USB và ổ mạng chậm ở *độ trễ* mỗi lần hỏi đĩa (vài ms), không phải
+/// băng thông, nên đọc nhiều thư mục cùng lúc nhanh hơn hẳn đọc lần lượt (đo trên SSD USB: ~6,5×).
+const IO_THREADS: usize = 8;
+/// Số thư mục đọc mỗi lô (giữa hai lô: báo tiến trình, kiểm tra huỷ).
+const READ_CHUNK: usize = 64;
+/// Số tác phẩm chuyển mỗi lô (giữa hai lô: ghi DB, báo tiến trình, kiểm tra huỷ).
+const MOVE_CHUNK: usize = 25;
+
+/// Khoá tên file theo cách hệ điều hành so tên (Windows/macOS không phân biệt hoa thường).
+fn name_key(n: &str) -> String {
+    if cfg!(any(windows, target_os = "macos")) {
+        n.to_lowercase()
+    } else {
+        n.to_string()
+    }
+}
+
+/// Danh sách mục của một thư mục đích, đọc **một lần** rồi giữ trong bộ nhớ: kiểm tra bản trùng và chọn tên
+/// `(n)` không phải hỏi đĩa từng file (ổ USB: mỗi lần hỏi ~4 ms; trước đây `description (603).txt` phải thử
+/// 603 tên). Việc chuyển file vẫn tự kiểm tra không ghi đè (`moves::move_file`).
+struct DirListing(HashMap<String, u64>);
+
+impl DirListing {
+    fn read(dir: &Path) -> Self {
+        let mut m = HashMap::new();
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            crate::progress::pulse();
+            let size = match e.metadata() {
+                Ok(md) if md.is_file() => md.len(),
+                _ => u64::MAX, // thư mục / không đọc được: tên đã có người dùng, nhưng không bao giờ là "bản trùng"
+            };
+            m.insert(name_key(&e.file_name().to_string_lossy()), size);
+        }
+        DirListing(m)
+    }
+
+    fn size_of(&self, name: &str) -> Option<u64> {
+        self.0.get(&name_key(name)).copied()
+    }
+
+    /// Tên chưa dùng (`name`, `name (1)`… như `moves::unique_dest`), giữ chỗ luôn cho file sắp chuyển tới.
+    fn reserve(&mut self, name: &str, size: u64) -> String {
+        let (stem, ext) = match name.rfind('.') {
+            Some(i) if i > 0 => (&name[..i], &name[i..]),
+            _ => (name, ""),
+        };
+        let pick = std::iter::once(name.to_string())
+            .chain((1..).map(|n| format!("{stem} ({n}){ext}")))
+            .find(|n| !self.0.contains_key(&name_key(n)))
+            .unwrap();
+        self.0.insert(name_key(&pick), size);
+        pick
+    }
+}
+
+/// Đọc một thư mục hộp thư đến: các tác phẩm trong đó, và thư mục có phải giữ lại (có truyện tranh) không.
+fn read_inbox_dir(dir: &Path, inbox: &Path) -> (Vec<Unit>, bool) {
+    crate::progress::working_on(dir);
+    let Ok(rd) = std::fs::read_dir(dir) else { return (Vec::new(), false) };
+    let mut groups: BTreeMap<String, Vec<(PathBuf, u64)>> = BTreeMap::new();
+    let mut opf: Option<PathBuf> = None;
+    for e in rd.flatten() {
+        crate::progress::pulse();
+        if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let p = e.path();
+        if p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("metadata.opf")) {
+            opf = Some(p);
+        } else if is_book(&p) {
+            // Windows trả sẵn dung lượng khi liệt kê thư mục – khỏi hỏi đĩa riêng cho từng file lúc chuyển.
+            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+            let stem = p.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+            groups.entry(stem).or_default().push((p, size));
+        }
+    }
+    let mut units = Vec::new();
+    let mut keep = false;
+    if groups.is_empty() {
+        return (units, keep);
+    }
+    let (osubj, otitle, odesc) = opf.as_deref().map(read_opf).unwrap_or_default();
+    let single = groups.len() == 1;
+    let rel = dir.strip_prefix(inbox).unwrap_or(dir);
+    let path_text =
+        rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
+    for (_, files) in groups {
+        if files.iter().any(|(f, _)| COMIC_EXT.contains(&ext_of(f).as_str())) {
+            keep = true; // truyện tranh: để nguyên cho luồng bộ truyện
+            continue;
+        }
+        let stem = files[0].0.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let title = if single && !otitle.is_empty() { otitle.clone() } else { stem };
+        let title = if single { format!("{title} {odesc}") } else { title };
+        units.push(Unit {
+            subjects: if single { osubj.clone() } else { String::new() },
+            title,
+            path: path_text.clone(),
+            files,
+        });
+    }
+    (units, keep)
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -451,7 +574,8 @@ fn sync_db(conn: &Connection, cfg: &Config, from: &Path, to: Option<&Path>) {
 }
 
 struct Unit {
-    files: Vec<PathBuf>,
+    /// (đường dẫn, dung lượng lúc đọc hộp thư đến)
+    files: Vec<(PathBuf, u64)>,
     subjects: String,
     title: String,
     path: String,
@@ -529,59 +653,29 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
         dirs.push(dir);
     }
     let n_dirs = dirs.len();
-    let mut last_report = std::time::Instant::now();
-    if let Some(f) = opts.progress {
-        f(Step { phase: "triage_read", done: 0, total: n_dirs });
-    }
-    for (i, dir) in dirs.into_iter().enumerate() {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(IO_THREADS)
+        .build()
+        .map_err(|e| Error::msg(format!("không tạo được luồng phân loại: {e}")))?;
+    let mut last_report: Option<std::time::Instant> = None;
+    for (ci, chunk) in dirs.chunks(READ_CHUNK).enumerate() {
         if cancelled() {
             rep.cancelled = true;
             return Ok(rep);
         }
-        if last_report.elapsed() >= std::time::Duration::from_millis(250) {
+        if last_report.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(250)) {
             if let Some(f) = opts.progress {
-                f(Step { phase: "triage_read", done: i, total: n_dirs });
+                f(Step { phase: "triage_read", done: ci * READ_CHUNK, total: n_dirs });
             }
-            last_report = std::time::Instant::now();
+            last_report = Some(std::time::Instant::now());
         }
-        crate::progress::working_on(&dir);
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-        let mut groups: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
-        let mut opf: Option<PathBuf> = None;
-        for e in rd.flatten() {
-            let p = e.path();
-            if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                continue;
+        let read: Vec<(Vec<Unit>, bool)> =
+            pool.install(|| chunk.par_iter().map(|d| read_inbox_dir(d, &inbox)).collect());
+        for (dir, (us, keep)) in chunk.iter().zip(read) {
+            if keep {
+                keep_dirs.insert(dir.clone());
             }
-            if p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("metadata.opf")) {
-                opf = Some(p);
-            } else if BOOK_EXT.contains(&ext_of(&p).as_str()) {
-                let stem = p.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
-                groups.entry(stem).or_default().push(p);
-            }
-        }
-        if groups.is_empty() {
-            continue;
-        }
-        let (osubj, otitle, odesc) = opf.as_deref().map(read_opf).unwrap_or_default();
-        let single = groups.len() == 1;
-        let rel = dir.strip_prefix(&inbox).unwrap_or(&dir);
-        let path_text =
-            rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
-        for (_, files) in groups {
-            if files.iter().any(|f| COMIC_EXT.contains(&ext_of(f).as_str())) {
-                keep_dirs.insert(dir.clone()); // truyện tranh: để nguyên cho luồng bộ truyện
-                continue;
-            }
-            let stem = files[0].file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            let title = if single && !otitle.is_empty() { otitle.clone() } else { stem };
-            let title = if single { format!("{title} {odesc}") } else { title };
-            units.push(Unit {
-                subjects: if single { osubj.clone() } else { String::new() },
-                title,
-                path: path_text.clone(),
-                files,
-            });
+            units.extend(us);
         }
     }
 
@@ -597,87 +691,121 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
     };
     let mut dest_cache: HashMap<String, PathBuf> = HashMap::new();
     let conn = if opts.dry_run { None } else { opts.conn };
-    // Gom cập nhật DB theo lô (đỡ fsync); file đã chuyển mà lô chưa ghi thì lần quét sau tự nhận ra chỗ mới.
-    let mut tx = conn.map(|c| c.unchecked_transaction()).transpose()?;
     let total = units.len();
     report(0, total);
-    let mut last_report = std::time::Instant::now();
-    for (i, u) in units.iter().enumerate() {
+    // Đoán thể loại (thuần CPU) song song cho cả hộp thư đến.
+    let decisions: Vec<Option<&'static RuleDef>> = pool.install(|| {
+        units
+            .par_iter()
+            .map(|u| {
+                crate::progress::pulse();
+                decide(&u.subjects, &u.title, &u.path)
+            })
+            .collect()
+    });
+    // Gom cập nhật DB theo lô (đỡ fsync); file đã chuyển mà lô chưa ghi thì lần quét sau tự nhận ra chỗ mới.
+    // Mở giao dịch (giữ chỗ ghi) sau bước đoán thể loại, để không chặn kết nối khác suốt bước đó.
+    let mut tx = conn.map(crate::db::write_tx).transpose()?;
+    let mut listings: HashMap<PathBuf, DirListing> = HashMap::new();
+    for (ci, chunk) in units.chunks(MOVE_CHUNK).enumerate() {
+        let start = ci * MOVE_CHUNK;
+        if start > 0 {
+            if let Some(t) = tx.take() {
+                t.commit()?;
+                tx = conn.map(crate::db::write_tx).transpose()?;
+            }
+            report(start, total);
+        }
         if cancelled() {
             rep.cancelled = true;
             break;
         }
-        if i > 0 && (i % 25 == 0 || last_report.elapsed() >= std::time::Duration::from_millis(250)) {
-            if let Some(t) = tx.take() {
-                t.commit()?;
-                tx = conn.map(|c| c.unchecked_transaction()).transpose()?;
-            }
-            report(i, total);
-            last_report = std::time::Instant::now();
-        }
-        rep.units += 1;
-        let (label, dest_dir) = match decide(&u.subjects, &u.title, &u.path) {
-            Some(def) => {
-                let dir = dest_cache
-                    .entry(def.name.to_string())
-                    .or_insert_with(|| find_existing(def, &cats).unwrap_or_else(|| root.join(def.name)));
-                (dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), dir.clone())
-            }
-            None => {
-                let dir = dest_cache.entry(OTHER_DIR.to_string()).or_insert_with(|| {
-                    cats.iter()
-                        .find(|(n, _)| fold(n) == fold(OTHER_DIR))
-                        .map(|(_, p)| p.clone())
-                        .unwrap_or_else(|| root.join(OTHER_DIR))
-                });
-                rep.to_other += 1;
-                (OTHER_DIR.to_string(), dir.clone())
-            }
-        };
-        *rep.by_category.entry(label.clone()).or_default() += 1;
-        if !dest_dir.is_dir() && !cats.iter().any(|(_, p)| *p == dest_dir) {
-            if !opts.dry_run {
-                std::fs::create_dir_all(&dest_dir)?;
-            }
-            rep.created_dirs.push(label.clone());
-            cats.push((label.clone(), dest_dir.clone()));
-        }
-        for f in &u.files {
-            crate::progress::working_on(f);
-            let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let size = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
-            let same = dest_dir.join(&name);
-            if same.is_file() && std::fs::metadata(&same).map(|m| m.len()).ok() == Some(size) {
-                // Bản trùng y hệt đã nằm ở thư mục đích.
-                if !opts.dry_run {
-                    match trasher.trash(f) {
-                        Ok(()) => {
-                            rep.duplicates_trashed += 1;
-                            if let Some(t) = tx.as_ref() {
-                                sync_db(t, cfg, f, None);
-                            }
-                        }
-                        Err(e) => rep.failures.push(format!("{}: {e}", f.display())),
-                    }
-                } else {
-                    rep.duplicates_trashed += 1;
+        // a) Lên kế hoạch (tuần tự, chỉ trong bộ nhớ): thư mục đích, bản trùng, tên không đụng hàng.
+        let mut to_move: Vec<(&Path, PathBuf)> = Vec::new();
+        let mut dups: Vec<(&Path, PathBuf, u64)> = Vec::new();
+        for (k, u) in chunk.iter().enumerate() {
+            rep.units += 1;
+            let (label, dest_dir) = match decisions[start + k] {
+                Some(def) => {
+                    let dir = dest_cache
+                        .entry(def.name.to_string())
+                        .or_insert_with(|| find_existing(def, &cats).unwrap_or_else(|| root.join(def.name)));
+                    (dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), dir.clone())
                 }
-                continue;
+                None => {
+                    let dir = dest_cache.entry(OTHER_DIR.to_string()).or_insert_with(|| {
+                        cats.iter()
+                            .find(|(n, _)| fold(n) == fold(OTHER_DIR))
+                            .map(|(_, p)| p.clone())
+                            .unwrap_or_else(|| root.join(OTHER_DIR))
+                    });
+                    rep.to_other += 1;
+                    (OTHER_DIR.to_string(), dir.clone())
+                }
+            };
+            *rep.by_category.entry(label.clone()).or_default() += 1;
+            if !listings.contains_key(&dest_dir) {
+                // Lần đầu gặp thư mục đích này: tạo nếu chưa có, rồi đọc danh sách file một lần.
+                crate::progress::working_on(&dest_dir);
+                if !dest_dir.is_dir() && !cats.iter().any(|(_, p)| *p == dest_dir) {
+                    if !opts.dry_run {
+                        std::fs::create_dir_all(&dest_dir)?;
+                    }
+                    rep.created_dirs.push(label.clone());
+                    cats.push((label.clone(), dest_dir.clone()));
+                }
+                listings.insert(dest_dir.clone(), DirListing::read(&dest_dir));
             }
-            if opts.dry_run {
-                rep.moved_files += 1;
-                continue;
+            let listing = listings.get_mut(&dest_dir).expect("vừa thêm");
+            for (f, size) in &u.files {
+                let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                if listing.size_of(&name) == Some(*size) {
+                    // Bản trùng y hệt (cùng tên, cùng dung lượng) đã nằm ở thư mục đích.
+                    if opts.dry_run {
+                        rep.duplicates_trashed += 1;
+                    } else {
+                        dups.push((f, dest_dir.join(&name), *size));
+                    }
+                    continue;
+                }
+                let to = dest_dir.join(listing.reserve(&name, *size));
+                if opts.dry_run {
+                    rep.moved_files += 1;
+                } else {
+                    to_move.push((f, to));
+                }
             }
-            let to = moves::unique_dest(&dest_dir, &name);
-            match moves::move_file(f, &to) {
+        }
+        // b) Chuyển file + ghi DB, nhật ký. Tuần tự: đổi tên vào cùng một thư mục bị NTFS xếp hàng, chạy song
+        //    song còn chậm hơn (đo trên SSD USB: 1,76 vs 1,4 ms/file). `move_file` vẫn không bao giờ ghi đè.
+        for (f, to) in &to_move {
+            crate::progress::working_on(f);
+            match moves::move_file(f, to) {
                 Ok(()) => {
                     rep.moved_files += 1;
                     if let Some(t) = tx.as_ref() {
-                        sync_db(t, cfg, f, Some(&to));
+                        sync_db(t, cfg, f, Some(to));
                     }
                     if let Some(j) = journal.as_mut() {
                         let line = serde_json::json!({"from": f.to_string_lossy(), "to": to.to_string_lossy()});
                         let _ = writeln!(j, "{line}");
+                    }
+                }
+                Err(e) => rep.failures.push(format!("{}: {e}", f.display())),
+            }
+        }
+        // c) Bản trùng vào Thùng rác – chỉ khi bản ở thư mục đích thật sự còn đó (có thể là file vừa chuyển
+        //    trong cùng lô mà bị lỗi).
+        for (f, same, size) in dups {
+            crate::progress::working_on(f);
+            if !std::fs::metadata(&same).is_ok_and(|m| m.is_file() && m.len() == size) {
+                continue; // để nguyên trong hộp thư đến, lần sau xét lại
+            }
+            match trasher.trash(f) {
+                Ok(()) => {
+                    rep.duplicates_trashed += 1;
+                    if let Some(t) = tx.as_ref() {
+                        sync_db(t, cfg, f, None);
                     }
                 }
                 Err(e) => rep.failures.push(format!("{}: {e}", f.display())),
@@ -709,7 +837,7 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
             continue;
         }
         let ext = ext_of(e.path());
-        if BOOK_EXT.contains(&ext.as_str()) || ARCHIVE_EXT.contains(&ext.as_str()) {
+        if is_book(e.path()) || ARCHIVE_EXT.contains(&ext.as_str()) {
             keepers.insert(e.path().parent().unwrap_or(&inbox).to_path_buf());
         }
     }
@@ -740,7 +868,7 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
             }
         } else if entry.file_type().is_file() {
             let ext = ext_of(&p);
-            if BOOK_EXT.contains(&ext.as_str()) || ARCHIVE_EXT.contains(&ext.as_str()) {
+            if is_book(&p) || ARCHIVE_EXT.contains(&ext.as_str()) {
                 continue;
             }
             targets.push((p, false));
@@ -884,5 +1012,46 @@ mod tests {
         let rep = run(&cfg, &fake, &TriageOptions { dry_run: false, ..Default::default() }).unwrap();
         assert_eq!(rep.duplicates_trashed, 1);
         assert!(root.join("Thơ/Tập thơ (1).epub").is_file());
+    }
+
+    #[test]
+    fn sidecar_txt_is_not_a_book_and_keeps_opf_tags() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        let cfg = Config { library_root: Some(root.to_path_buf()), ..Config::default() };
+        std::fs::create_dir_all(root.join("Thơ")).unwrap();
+        let a = root.join("Chưa phân loại/Tác giả/Tập thơ xuân");
+        write(&a.join("Tập thơ xuân.epub"), b"e");
+        write(&a.join("description.txt"), b"mo ta");
+        write(&a.join(".progress.txt"), b"1");
+        write(&a.join("metadata.kfx"), b"k");
+        write(&a.join("metadata.opf"), opf("Thơ", "Tập thơ xuân").as_bytes());
+        let fake = Fake(RefCell::new(vec![]));
+        let rep = run(&cfg, &fake, &TriageOptions::default()).unwrap();
+        assert_eq!(rep.units, 1, "file đi kèm không thành tác phẩm riêng");
+        assert!(root.join("Thơ/Tập thơ xuân.epub").is_file(), "vẫn dùng tag của metadata.opf");
+        assert!(!root.join("Khác").exists());
+        assert!(!root.join("Chưa phân loại/Tác giả").exists(), "thư mục chỉ còn file đi kèm thì được dọn");
+    }
+
+    #[test]
+    fn many_same_names_get_distinct_suffixes() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        let cfg = Config { library_root: Some(root.to_path_buf()), ..Config::default() };
+        write(&root.join("Thơ/Tập thơ.epub"), b"0");
+        write(&root.join("Thơ/Tập thơ (2).epub"), b"00");
+        for i in 0..5 {
+            write(&root.join(format!("Chưa phân loại/{i}/Tập thơ.epub")), format!("khac {i}").as_bytes());
+        }
+        let fake = Fake(RefCell::new(vec![]));
+        let rep = run(&cfg, &fake, &TriageOptions::default()).unwrap();
+        assert!(rep.failures.is_empty(), "{:?}", rep.failures);
+        assert_eq!(rep.moved_files, 5);
+        let n = std::fs::read_dir(root.join("Thơ")).unwrap().count();
+        assert_eq!(n, 7, "không file nào bị ghi đè");
+        for k in [1, 3, 4, 5, 6] {
+            assert!(root.join(format!("Thơ/Tập thơ ({k}).epub")).is_file(), "thiếu ({k})");
+        }
     }
 }

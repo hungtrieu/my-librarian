@@ -20,6 +20,9 @@ const lit = [['Mắt Biếc', 'Nguyễn Nhật Ánh'], ['Tôi thấy hoa vàng t
   ['Truyện Kiều', 'Nguyễn Du'], ['Dế Mèn Phiêu Lưu Ký', 'Tô Hoài'], ['Nỗi buồn chiến tranh', 'Bảo Ninh'], ['Rừng Na Uy', 'Haruki Murakami'], ['Nhà Giả Kim', 'Paulo Coelho'],
   ['Trăm năm cô đơn', 'Gabriel García Márquez'], ['Bố già', 'Mario Puzo'], ['Hai số phận', 'Jeffrey Archer'], ['Chí Phèo', 'Nam Cao'], ['Vợ nhặt', 'Kim Lân']];
 lit.forEach(([t, a], i) => add({ title: t, authors: a, category: 'Văn học', format: i % 4 === 3 ? 'pdf' : 'epub', read_status: i === 0 ? 'reading' : i === 3 ? 'read' : 'unread', progress: i === 0 ? 0.42 : null, last_read_at: i === 0 ? now - 600 : null }));
+// Một tác phẩm nhiều định dạng trong cùng thư mục → một ô "3 định dạng".
+add({ title: 'Mắt Biếc', authors: 'Nguyễn Nhật Ánh', category: 'Văn học', format: 'mobi' });
+add({ title: 'Mắt Biếc', authors: 'Nguyễn Nhật Ánh', category: 'Văn học', format: 'pdf', size: 5200000 });
 [['Steve Jobs', 'Walter Isaacson'], ['Đời viết văn của tôi', 'Nguyễn Hiến Lê'], ['Elon Musk', 'Walter Isaacson'], ['Becoming', 'Michelle Obama']]
   .forEach(([t, a]) => add({ title: t, authors: a, category: 'Tiểu sử - Hồi ký' }));
 [['Clean Code', 'Robert C. Martin'], ['The Pragmatic Programmer', 'Andrew Hunt'], ['Refactoring', 'Martin Fowler'], ['Design Patterns', 'Erich Gamma'], ['Rust in Action', 'Tim McNamara']]
@@ -71,11 +74,24 @@ function query(q) {
   if (q.on_ipad) r = r.filter((b) => b.on_ipad);
   r = r.filter((b) => !!b.not_worth === !!q.not_worth);
   if (q.series) r = r.filter((b) => b.series === q.series).sort((a, b) => a.volume - b.volume);
+  const RANK = ['epub', 'azw3', 'kfx', 'mobi', 'azw', 'fb2', 'pdf', 'docx', 'doc', 'txt', 'rtf', 'djvu'];
+  const rank = (f) => (RANK.includes(f) ? RANK.indexOf(f) : RANK.length);
+  const workKey = (b) => fold(b.rel_path.split('\\').slice(0, -1).join('\\')) + '|' + fold(b.title);
+  if (q.work) r = r.filter((b) => workKey(b) === q.work).sort((a, b) => rank(a.format) - rank(b.format));
   let items = r.map((b) => ({ kind: 'book', ...b }));
-  if (q.group_series && !q.series) {
-    const g = new Map();
+  if (q.group_series && !q.series && !q.work) {
+    const g = new Map(), w = new Map();
     items = [];
-    for (const b of r) { if (b.series) { const k = b.category + '|' + b.series; (g.get(k) || g.set(k, []).get(k)).push(b); } else if (!q.only_series) items.push({ kind: 'book', ...b }); }
+    for (const b of r) { if (b.series) { const k = b.category + '|' + b.series; (g.get(k) || g.set(k, []).get(k)).push(b); } else if (!q.only_series) { const k = workKey(b); (w.get(k) || w.set(k, []).get(k)).push(b); } }
+    for (const [k, files] of w) {
+      const formats = [...new Set(files.map((f) => f.format))].sort((a, b) => rank(a) - rank(b));
+      if (formats.length < 2) { items.push(...files.map((b) => ({ kind: 'book', ...b }))); continue; }
+      files.sort((a, b) => rank(a.format) - rank(b.format));
+      const m = files[0];
+      items.push({ kind: 'series', work: k, formats, category: m.category, series: m.title, volumes: files.length, read: files.filter((v) => v.read_status === 'read').length,
+        cover_book_id: m.id, continue_book_id: files.find((v) => v.read_status === 'reading')?.id ?? null, size: files.reduce((s, v) => s + v.size, 0), authors: m.authors,
+        title: m.title, added_at: m.added_at, last_read_at: m.last_read_at });
+    }
     for (const vols of g.values()) {
       vols.sort((a, b) => a.volume - b.volume);
       const lastRead = vols.map((v) => v.read_status).lastIndexOf('read');
@@ -86,7 +102,7 @@ function query(q) {
   const t = (x) => x.title || x.series;
   const cmp = { added: (a, b) => b.added_at - a.added_at, relevance: (a, b) => b.added_at - a.added_at, title: (a, b) => t(a).localeCompare(t(b), 'vi', { numeric: true }),
     author: (a, b) => (a.authors || '').localeCompare(b.authors || '', 'vi'), recent_read: (a, b) => (b.last_read_at || 0) - (a.last_read_at || 0), size: (a, b) => b.size - a.size }[q.sort || 'added'];
-  if (!q.series) items.sort(cmp);
+  if (!q.series && !q.work) items.sort(cmp);
   return { total: items.length, offset: q.offset || 0, items: items.slice(q.offset || 0, (q.offset || 0) + (q.limit || 200)) };
 }
 const cats = () => ['Công nghệ', 'Tiểu sử - Hồi ký', 'Văn học', 'truyen tranh'].map((name) => ({ name, books: present().filter((b) => b.category === name).length,

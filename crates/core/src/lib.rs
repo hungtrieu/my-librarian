@@ -58,7 +58,7 @@ use std::path::{Path, PathBuf};
 /// chỉ còn phải làm phần chưa xong.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct Step {
-    /// `scan` · `recover` · `triage_read` · `triage` · `triage_clean` · `hash_quick` · `hash_full` · `analyze`.
+    /// `scan` · `recover` · `triage_read` · `triage` · `triage_clean` · `hash_quick` · `hash_full` · `analyze` · `suspect_hash`.
     pub phase: &'static str,
     pub done: usize,
     pub total: usize,

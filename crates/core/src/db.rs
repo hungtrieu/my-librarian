@@ -180,6 +180,15 @@ pub fn open_in_memory() -> Result<Connection> {
     Ok(conn)
 }
 
+/// Giao dịch ghi: `BEGIN IMMEDIATE` – giữ chỗ ghi ngay từ đầu.
+///
+/// Không dùng giao dịch DEFERRED (`unchecked_transaction`) cho việc ghi: ở WAL, giao dịch DEFERRED đọc trước (lấy
+/// ảnh chụp) rồi mới ghi; nếu kết nối khác (luồng nền, giao diện) đã ghi xen vào giữa thì SQLite trả SQLITE_BUSY
+/// ("database is locked") NGAY, không chờ `busy_timeout`. IMMEDIATE thì chờ tới lượt theo `busy_timeout`.
+pub fn write_tx(conn: &Connection) -> Result<rusqlite::Transaction<'_>> {
+    Ok(rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?)
+}
+
 fn configure(conn: &Connection) -> Result<()> {
     conn.busy_timeout(Duration::from_secs(10))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -195,7 +204,7 @@ pub fn schema_version(conn: &Connection) -> Result<i64> {
 pub fn migrate(conn: &Connection) -> Result<()> {
     let current = schema_version(conn)? as usize;
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(current) {
-        let tx = conn.unchecked_transaction()?;
+        let tx = write_tx(conn)?;
         tx.execute_batch(sql)?;
         tx.pragma_update(None, "user_version", (i + 1) as i64)?;
         tx.commit()?;

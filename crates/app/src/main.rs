@@ -214,10 +214,39 @@ fn start_scan(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     std::thread::spawn(move || {
         // Giám sát treo: mỗi giây gửi "bước nào, đứng yên bao lâu" lên giao diện; quá 60 giây không có tiến
         // triển thì tự huỷ quét và báo lỗi (xem librarian_core::progress).
+        // Báo "xong" đúng một lần: hoặc khi luồng quét trả về, hoặc ngay khi phát hiện treo (từ luồng giám sát) –
+        // luồng quét có thể kẹt mãi trong một lệnh I/O không trả về, giao diện không được chờ nó.
+        let reported = Arc::new(AtomicBool::new(false));
+        let finish_ui = {
+            let (app, slot_ref, cancel, reported) = (app.clone(), slot_ref.clone(), cancel.clone(), reported.clone());
+            move |ev: DoneEvent| {
+                if reported.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                // chỉ nhả ô của chính lần quét này (lần quét bị bỏ rơi trả về muộn không được xoá ô của lần sau)
+                if let Ok(mut s) = slot_ref.lock() {
+                    if s.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cancel)) {
+                        *s = None;
+                    }
+                }
+                let _ = app.emit("scan-done", ev);
+            }
+        };
         let health_app = app.clone();
-        let watchdog = Watchdog::start(cancel.clone(), progress::STALL_LIMIT, move |h| {
-            let _ = health_app.emit("scan-health", h);
-        });
+        let on_stall = {
+            let finish_ui = finish_ui.clone();
+            move |stall: &progress::Stall| {
+                finish_ui(DoneEvent { ok: false, message: Some(stall.to_string()), stats: None });
+            }
+        };
+        let watchdog = Watchdog::start_with(
+            cancel.clone(),
+            progress::STALL_LIMIT,
+            move |h| {
+                let _ = health_app.emit("scan-health", h);
+            },
+            on_stall,
+        );
         let res = (|| -> librarian_core::Result<ReportStats> {
             let _lock = lock::ScanLock::try_acquire(&home)?;
             let lib = Library::open(&home)?;
@@ -247,15 +276,12 @@ fn start_scan(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
             report::run_analysis_with(&lib.conn, &lib.config, "app", Some(&cancel), None, Some(&emit_step))
         })();
         let stall = watchdog.finish();
-        if let Ok(mut s) = slot_ref.lock() {
-            *s = None;
-        }
         let ev = match (res, stall) {
             (_, Some(stall)) => DoneEvent { ok: false, message: Some(stall.to_string()), stats: None },
             (Ok(st), None) => DoneEvent { ok: true, message: None, stats: Some(st) },
             (Err(e), None) => DoneEvent { ok: false, message: Some(e.to_string()), stats: None },
         };
-        let _ = app.emit("scan-done", ev);
+        finish_ui(ev); // không làm gì nếu đã báo lúc phát hiện treo
     });
     Ok(())
 }
@@ -1190,11 +1216,6 @@ fn main() {
         Err(e) => tracing::warn!("chuyển dữ liệu cũ sang {} lỗi: {e}", home.display()),
     }
     let lib = Library::open_recovering(&home).expect("không mở được dữ liệu thư viện");
-    // Số trùng / nghi trùng / chờ phân loại trong báo cáo có thể đã cũ (dọn ở bản trước, xoá file ngoài app…):
-    // tính lại khi mở app để badge và banner đúng ngay.
-    if let Err(e) = report::refresh_counts(&lib.conn, &lib.config) {
-        tracing::warn!("cập nhật số liệu báo cáo lỗi: {e}");
-    }
     // Sao lưu DB mỗi ngày (E10-06) trên luồng riêng, kết nối riêng.
     {
         let home = home.clone();
@@ -1268,6 +1289,28 @@ fn main() {
                     b = b.data_directory(dir);
                 }
                 b.title("My Librarian").build()?;
+            }
+            // Số trùng / nghi trùng / chờ phân loại trong báo cáo có thể đã cũ (dọn ở bản trước, xoá file ngoài
+            // app…): tính lại khi mở app – trên luồng riêng, kết nối riêng, SAU khi đã có cửa sổ. Tìm nghi trùng
+            // có thể phải băm nhanh hàng nghìn file trên ổ chậm (kho 75k sách, ổ USB: ~4 phút); chạy trước khi
+            // tạo cửa sổ thì app mở mà không hiện gì. Xong thì báo giao diện tải lại badge.
+            {
+                let home = home.clone();
+                let app = app.handle().clone();
+                std::thread::spawn(move || {
+                    let t = std::time::Instant::now();
+                    let r = Config::load(&home).and_then(|cfg| {
+                        let conn = db::open(&home.join("library.db"))?;
+                        report::refresh_counts(&conn, &cfg)
+                    });
+                    match r {
+                        Ok(()) => {
+                            tracing::info!("cập nhật số liệu báo cáo: {:?}", t.elapsed());
+                            let _ = app.emit("stats-updated", ());
+                        }
+                        Err(e) => tracing::warn!("cập nhật số liệu báo cáo lỗi: {e}"),
+                    }
+                });
             }
             Ok(())
         })

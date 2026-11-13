@@ -243,11 +243,17 @@ fn suspects_found_reviewed_and_remembered() {
     analyze(&e);
     let c = &e.lib.conn;
     let groups = dedupe::suspect_groups(c).unwrap();
+    // Một tác phẩm nhiều định dạng (Mat Biec.pdf + Mắt Biếc.epub) không phải nghi trùng.
+    assert!(
+        !groups.iter().any(|g| g.members.iter().any(|b| b.file_name == "Mat Biec.pdf")),
+        "khác định dạng thì không tính là trùng"
+    );
     let mb = groups
         .iter()
-        .find(|g| g.members.iter().any(|b| b.file_name == "Mat Biec.pdf"))
-        .expect("Mat Biec.pdf nghi trùng với Mắt Biếc.epub");
-    assert!(mb.members.iter().any(|b| b.file_name == "Mắt Biếc.epub"));
+        .find(|g| g.members.iter().any(|b| b.file_name == "Truyen Kieu - ban in.pdf"))
+        .expect("Truyen Kieu - ban in.pdf nghi trùng với Truyện Kiều.pdf");
+    assert!(mb.members.iter().any(|b| b.file_name == "Truyện Kiều.pdf"));
+    assert!(mb.members.iter().all(|b| b.format == "pdf"));
     // Không gộp các tập khác nhau.
     for g in &groups {
         let vols: std::collections::HashSet<_> =
@@ -256,11 +262,16 @@ fn suspects_found_reviewed_and_remembered() {
     }
     let ids: Vec<i64> = mb.members.iter().map(|b| b.id).collect();
     dedupe::decide(c, &ids, Decision::NotDuplicate).unwrap();
-    let still =
-        |c| dedupe::suspect_groups(c).unwrap().iter().any(|g| g.members.iter().any(|b| b.file_name == "Mat Biec.pdf"));
+    let still = |c| {
+        dedupe::suspect_groups(c)
+            .unwrap()
+            .iter()
+            .any(|g| g.members.iter().any(|b| b.file_name == "Truyen Kieu - ban in.pdf"))
+    };
     assert!(!still(c));
     // Quét lại + đổi tên file → vẫn nhớ quyết định.
-    std::fs::rename(e.sample.inbox.join("Mat Biec.pdf"), e.sample.inbox.join("Mắt biếc - bản scan.pdf")).unwrap();
+    std::fs::rename(e.sample.inbox.join("Truyen Kieu - ban in.pdf"), e.sample.inbox.join("Truyện Kiều - bản scan.pdf"))
+        .unwrap();
     analyze(&e);
     let again = dedupe::suspect_groups(c).unwrap();
     assert!(
@@ -692,4 +703,108 @@ fn hashing_is_saved_per_batch_and_resumes() {
     let h2 = hash::ensure_hashes_with(&lib.conn, 1, None, Some(&on2)).unwrap();
     assert_eq!(h2.quick_hashed, 200 - h1.quick_hashed);
     assert!(totals.borrow().contains(&("hash_quick", 200 - h1.quick_hashed)));
+}
+
+#[test]
+fn suspect_hashing_reports_progress_and_resumes_after_cancel() {
+    use std::sync::atomic::AtomicBool;
+    let e = setup();
+    analyze(&e);
+    let c = &e.lib.conn;
+    let steps = RefCell::new(Vec::<librarian_core::Step>::new());
+    let on = |s: librarian_core::Step| steps.borrow_mut().push(s);
+    let phase_steps = |steps: &RefCell<Vec<librarian_core::Step>>| -> Vec<(usize, usize)> {
+        steps.borrow().iter().filter(|s| s.phase == dedupe::SUSPECT_HASH_PHASE).map(|s| (s.done, s.total)).collect()
+    };
+
+    // Huỷ ngay: không ra kết quả, nhưng đã báo bước con kèm tổng x / y.
+    let cancel = AtomicBool::new(true);
+    assert!(dedupe::suspect_groups_with(c, 2, Some(&cancel), Some(&on)).unwrap().is_none());
+    let first = phase_steps(&steps);
+    assert!(first.first().is_some_and(|&(d, t)| d == 0 && t >= 2), "{first:?}");
+
+    // Chạy tiếp: băm đủ, tiến trình đi tới total.
+    steps.borrow_mut().clear();
+    let groups = dedupe::suspect_groups_with(c, 2, None, Some(&on)).unwrap().unwrap();
+    assert!(!groups.is_empty());
+    let run = phase_steps(&steps);
+    assert!(run.last().is_some_and(|&(d, t)| d == t && t >= 2), "{run:?}");
+
+    // Lần sau: không còn gì để băm lại.
+    steps.borrow_mut().clear();
+    let again = dedupe::suspect_groups_with(c, 2, None, Some(&on)).unwrap().unwrap();
+    assert_eq!(again.len(), groups.len());
+    assert!(phase_steps(&steps).iter().all(|&(_, t)| t == 0), "{:?}", phase_steps(&steps));
+}
+
+#[test]
+fn second_full_run_redoes_no_finished_work() {
+    // Các bước đã xong (phân loại, quét, băm nhanh, băm đầy đủ, băm bổ sung nghi trùng) được lưu lại:
+    // chạy lần hai không làm lại việc nào.
+    let e = setup();
+    let (c, cfg) = (&e.lib.conn, &e.lib.config);
+    let steps = RefCell::new(Vec::<librarian_core::Step>::new());
+    let on = |s: librarian_core::Step| steps.borrow_mut().push(s);
+    let first = report::run_analysis_with(c, cfg, "manual", None, Some(&e.trash), Some(&on)).unwrap();
+    assert!(!first.scan.cancelled);
+    assert!(steps.borrow().iter().any(|s| s.phase == "triage" && s.total > 0), "lần đầu có việc phân loại");
+
+    steps.borrow_mut().clear();
+    let second = report::run_analysis_with(c, cfg, "manual", None, Some(&e.trash), Some(&on)).unwrap();
+    assert_eq!((second.scan.added, second.scan.updated), (0, 0), "quét lại chỉ thấy file không đổi");
+    for phase in ["triage", "hash_quick", "hash_full", dedupe::SUSPECT_HASH_PHASE] {
+        let max = steps.borrow().iter().filter(|s| s.phase == phase).map(|s| s.total).max().unwrap_or(0);
+        assert_eq!(max, 0, "bước {phase} làm lại {max} mục");
+    }
+    assert_eq!(second.suspect_groups, first.suspect_groups);
+}
+
+#[test]
+fn browse_groups_one_work_in_many_formats() {
+    use librarian_core::browse::{self, Item, Query};
+    let e = setup();
+    let vh = e.sample.books.join("Văn học");
+    testdata::write_mobi(&vh.join("Mắt Biếc.mobi"), "Mắt Biếc", "Nguyễn Nhật Ánh", None, None, "ban mobi").unwrap();
+    testdata::write_pdf(&vh.join("Mắt Biếc.pdf"), Some("Mắt Biếc"), Some("Nguyễn Nhật Ánh"), "ban pdf").unwrap();
+    scan(&e);
+    let c = &e.lib.conn;
+    let all = browse::query(c, &Query { group_series: true, limit: 500, ..Default::default() }).unwrap();
+    let works: Vec<_> = all
+        .items
+        .iter()
+        .filter_map(|i| if let Item::Series(s) = i { s.work.as_ref().map(|_| s) } else { None })
+        .collect();
+    let mb = works.iter().find(|s| s.series == "Mắt Biếc").expect("Mắt Biếc 3 định dạng là một ô");
+    assert_eq!(mb.formats, vec!["epub", "mobi", "pdf"]);
+    assert_eq!(mb.volumes, 3);
+    assert_eq!(mb.category.as_deref(), Some("Văn học"));
+    // Không còn ô sách lẻ trùng bìa trong Văn học; bản ở hộp thư đến (thư mục khác) vẫn là ô riêng.
+    let loose: Vec<_> = all
+        .items
+        .iter()
+        .filter_map(|i| if let Item::Book(b) = i { (b.norm_title == "mat biec").then_some(b) } else { None })
+        .collect();
+    assert!(loose.iter().all(|b| b.in_inbox), "{:?}", loose.iter().map(|b| &b.rel_path).collect::<Vec<_>>());
+    // Mở ô: bản chính là EPUB (đọc được trong app).
+    let main = browse::query(c, &Query { work: mb.work.clone(), limit: 50, ..Default::default() }).unwrap();
+    let fmts: Vec<_> =
+        main.items.iter().map(|i| if let Item::Book(b) = i { b.format.clone() } else { String::new() }).collect();
+    assert_eq!(fmts, vec!["epub", "mobi", "pdf"]);
+    assert!(matches!(&main.items[0], Item::Book(b) if b.id == mb.cover_book_id));
+    // Mục "Bộ truyện" chỉ có bộ thật; lọc một định dạng thì không gộp.
+    let only =
+        browse::query(c, &Query { group_series: true, only_series: true, limit: 500, ..Default::default() }).unwrap();
+    assert!(only.items.iter().all(|i| matches!(i, Item::Series(s) if s.work.is_none())));
+    let pdf = browse::query(
+        c,
+        &Query {
+            group_series: true,
+            format: Some("pdf".into()),
+            category: Some("Văn học".into()),
+            limit: 50,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(pdf.items.iter().any(|i| matches!(i, Item::Book(b) if b.file_name == "Mắt Biếc.pdf")));
 }

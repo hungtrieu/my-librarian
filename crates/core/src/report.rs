@@ -107,7 +107,10 @@ pub fn run_analysis_with(
             st.scan.cancelled = true;
         }
     }
-    if !st.scan.cancelled {
+    'analyze: {
+        if st.scan.cancelled {
+            break 'analyze;
+        }
         let step = |done: usize| {
             if let Some(f) = on {
                 f(Step { phase: "analyze", done, total: 4 });
@@ -126,7 +129,14 @@ pub fn run_analysis_with(
             }
         }
         step(2);
-        st.suspect_groups = dedupe::suspect_groups(conn)?.len();
+        // Có thể phải băm bổ sung nhiều file: bước con riêng có x / y (`suspect_hash`), huỷ được, lưu theo lô.
+        match dedupe::suspect_groups_with(conn, cfg.hash_threads, cancel, on)? {
+            Some(g) => st.suspect_groups = g.len(),
+            None => {
+                st.scan.cancelled = true;
+                break 'analyze;
+            }
+        }
         step(3);
         if cfg.library_root.as_ref().is_some_and(|r| r.is_dir()) {
             let props = classify::propose(conn, cfg)?;

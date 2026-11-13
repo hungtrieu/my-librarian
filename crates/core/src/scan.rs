@@ -351,7 +351,7 @@ pub fn scan(conn: &Connection, cfg: &Config, opts: &ScanOptions) -> Result<ScanS
             continue;
         }
         let root_id = db::ensure_root(conn, &root_str, root_kind)?;
-        let mut tx = Some(conn.unchecked_transaction()?);
+        let mut tx = Some(crate::db::write_tx(conn)?);
         let mut in_tx = 0usize;
         let mut tx_started = Instant::now();
         let walker = WalkDir::new(&root).follow_links(false).into_iter().filter_entry(|e| !excluded(cfg, e));
@@ -422,7 +422,7 @@ pub fn scan(conn: &Connection, cfg: &Config, opts: &ScanOptions) -> Result<ScanS
             in_tx += 1;
             if in_tx >= 500 || tx_started.elapsed() >= COMMIT_EVERY {
                 tx.take().unwrap().commit()?;
-                tx = Some(conn.unchecked_transaction()?);
+                tx = Some(crate::db::write_tx(conn)?);
                 in_tx = 0;
                 tx_started = Instant::now();
             }
@@ -442,7 +442,7 @@ pub fn scan(conn: &Connection, cfg: &Config, opts: &ScanOptions) -> Result<ScanS
             let v = st.query_map(params![root_id, scan_id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
             v
         };
-        let tx = conn.unchecked_transaction()?;
+        let tx = crate::db::write_tx(conn)?;
         for id in &gone {
             crate::progress::pulse();
             db::set_status(&tx, *id, "missing")?;
@@ -525,7 +525,7 @@ fn recover_moved(
 }
 
 fn merge_into(conn: &Connection, new: &Book, old: &Book) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     db::fts_delete(&tx, new.id)?;
     let first_seen: Option<i64> =
         tx.query_row("SELECT last_seen_scan FROM books WHERE id=?1", [new.id], |r| r.get(0))?;

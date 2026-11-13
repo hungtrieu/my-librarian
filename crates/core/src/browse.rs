@@ -1,5 +1,5 @@
 //! Truy vấn cho lưới thư viện (E3-03 lọc, E3-04 sắp xếp, E3-05 phân trang cho danh sách ảo hoá,
-//! E3-07 gộp truyện theo bộ). Lấy cột nhẹ rồi gộp/sắp trong Rust: 50k dòng vẫn chỉ vài chục ms.
+//! E3-07 gộp truyện theo bộ; một tác phẩm nhiều định dạng cũng gộp thành một ô). Lấy cột nhẹ rồi gộp/sắp trong Rust: 50k dòng vẫn chỉ vài chục ms.
 
 use crate::error::Result;
 use crate::normalize::{fold, natural_cmp, natural_cmp_folded, volume_cmp};
@@ -38,6 +38,8 @@ pub struct Query {
     pub group_series: bool,
     /// Chỉ trả các vol của một bộ (màn chi tiết bộ).
     pub series: Option<String>,
+    /// Chỉ trả các định dạng của một tác phẩm (khoá [`SeriesCard::work`] – màn chi tiết tác phẩm).
+    pub work: Option<String>,
     /// Chỉ trả các ô bộ truyện (mục "Bộ truyện").
     pub only_series: bool,
     /// Chỉ sách không đọc được (lỗi đọc metadata / file hỏng) hoặc có DRM (E10-04).
@@ -77,6 +79,9 @@ pub struct BookCard {
     pub on_ipad: bool,
     /// Đã đánh dấu "không đáng đọc".
     pub not_worth: bool,
+    /// Tên chuẩn hoá – để gộp các định dạng của cùng một tác phẩm.
+    #[serde(skip)]
+    pub norm_title: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,6 +94,11 @@ pub struct SeriesCard {
     pub continue_book_id: Option<i64>,
     pub size: i64,
     pub authors: String,
+    /// `Some(khoá)`: ô này là **một tác phẩm nhiều định dạng** (vd. `.epub` + `.mobi` + `.pdf` cùng tên trong cùng
+    /// thư mục), không phải bộ truyện; `volumes` là số file. Mở chi tiết bằng [`Query::work`].
+    pub work: Option<String>,
+    /// Các định dạng của tác phẩm (theo thứ tự ưu tiên đọc), rỗng với bộ truyện.
+    pub formats: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -109,7 +119,7 @@ pub struct Page {
 
 const COLS: &str = "id, title, authors, format, size, category, series, volume, read_status, progress, added_at, \
     last_read_at, file_name, path, rel_path, in_inbox, page_count, mtime, norm_author, error, drm, \
-    (id IN (SELECT value FROM devices, json_each(devices.on_device))), not_worth";
+    (id IN (SELECT value FROM devices, json_each(devices.on_device))), not_worth, norm_title";
 
 fn card(r: &rusqlite::Row) -> rusqlite::Result<(BookCard, String)> {
     Ok((
@@ -136,6 +146,7 @@ fn card(r: &rusqlite::Row) -> rusqlite::Result<(BookCard, String)> {
             drm: r.get(20)?,
             on_ipad: r.get(21)?,
             not_worth: r.get(22)?,
+            norm_title: r.get(23)?,
         },
         r.get(18)?,
     ))
@@ -143,6 +154,29 @@ fn card(r: &rusqlite::Row) -> rusqlite::Result<(BookCard, String)> {
 
 fn vol_cmp(a: &BookCard, b: &BookCard) -> std::cmp::Ordering {
     volume_cmp(a.volume, &a.file_name, b.volume, &b.file_name)
+}
+
+/// Khoá "tác phẩm": cùng thư mục + cùng tên chuẩn hoá. `None` khi tên quá ngắn để tin.
+pub fn work_key(b: &BookCard) -> Option<String> {
+    if b.norm_title.chars().count() < 2 {
+        return None;
+    }
+    let dir = match b.rel_path.rfind(['\\', '/']) {
+        Some(i) => fold(&b.rel_path[..i]),
+        None => String::new(),
+    };
+    Some(format!("{dir}|{}", b.norm_title))
+}
+
+/// Thứ tự ưu tiên khi mở một tác phẩm nhiều định dạng: định dạng đọc được trong app trước.
+fn format_rank(f: &str) -> usize {
+    const ORDER: &[&str] = &["epub", "azw3", "kfx", "mobi", "azw", "fb2", "pdf", "docx", "doc", "txt", "rtf", "djvu"];
+    let f = f.to_ascii_lowercase();
+    ORDER.iter().position(|x| *x == f).unwrap_or(ORDER.len())
+}
+
+fn format_cmp(a: &BookCard, b: &BookCard) -> std::cmp::Ordering {
+    format_rank(&a.format).cmp(&format_rank(&b.format)).then_with(|| a.file_name.cmp(&b.file_name))
 }
 
 pub fn query(conn: &Connection, q: &Query) -> Result<Page> {
@@ -195,6 +229,7 @@ pub fn query(conn: &Connection, q: &Query) -> Result<Page> {
         })
         .filter(|(_, na)| author_key.as_ref().is_none_or(|k| na == k || (!k.is_empty() && na.contains(k.as_str()))))
         .map(|(b, _)| b)
+        .filter(|b| q.work.as_ref().is_none_or(|w| work_key(b).as_ref() == Some(w)))
         .collect();
 
     let sort = if q.sort == Sort::Relevance && fq.is_none() { Sort::Added } else { q.sort };
@@ -216,7 +251,7 @@ pub fn query(conn: &Connection, q: &Query) -> Result<Page> {
     };
 
     let mut items: Vec<(Item, BookCard)> = Vec::new(); // (item, đại diện để sắp xếp)
-    if q.group_series && q.series.is_none() {
+    if q.group_series && q.series.is_none() && q.work.is_none() {
         let mut groups: HashMap<(Option<String>, String), Vec<BookCard>> = HashMap::new();
         let mut singles = Vec::new();
         for b in books {
@@ -226,8 +261,51 @@ pub fn query(conn: &Connection, q: &Query) -> Result<Page> {
             }
         }
         if !q.only_series {
+            // Một tác phẩm nhiều định dạng (cùng thư mục, cùng tên) → một ô, khỏi lặp bìa.
+            let mut works: HashMap<String, Vec<BookCard>> = HashMap::new();
             for b in singles {
-                items.push((Item::Book(b.clone()), b));
+                match work_key(&b) {
+                    Some(k) => works.entry(k).or_default().push(b),
+                    None => items.push((Item::Book(b.clone()), b)),
+                }
+            }
+            for (work, mut files) in works {
+                let mut formats: Vec<String> = files.iter().map(|b| b.format.to_ascii_lowercase()).collect();
+                formats.sort_by_key(|f| format_rank(f));
+                formats.dedup();
+                if formats.len() < 2 {
+                    for b in files {
+                        items.push((Item::Book(b.clone()), b));
+                    }
+                    continue;
+                }
+                files.sort_by(format_cmp);
+                let main = files[0].clone();
+                let continue_book_id = files.iter().find(|b| b.read_status == "reading").map(|b| b.id);
+                // Đại diện để sắp xếp: bản khớp tốt nhất / mới nhất… nhưng mang tên + tác giả của bản chính.
+                let mut rep = main.clone();
+                for f in &files {
+                    if key_cmp(f, &rep) == std::cmp::Ordering::Less {
+                        rep = f.clone();
+                    }
+                }
+                rep.title = main.title.clone();
+                rep.authors =
+                    files.iter().find(|b| !b.authors.is_empty()).map(|b| b.authors.clone()).unwrap_or_default();
+                rep.size = files.iter().map(|b| b.size).sum();
+                let card = SeriesCard {
+                    category: main.category.clone(),
+                    series: main.title.clone(),
+                    volumes: files.len(),
+                    read: files.iter().filter(|b| b.read_status == "read").count(),
+                    cover_book_id: main.id,
+                    continue_book_id,
+                    size: rep.size,
+                    authors: rep.authors.clone(),
+                    work: Some(work),
+                    formats,
+                };
+                items.push((Item::Series(card), rep));
             }
         }
         for ((category, series), mut vols) in groups {
@@ -260,18 +338,22 @@ pub fn query(conn: &Connection, q: &Query) -> Result<Page> {
                 size: rep.size,
                 authors: rep.authors.clone(),
                 series,
+                work: None,
+                formats: Vec::new(),
             };
             items.push((Item::Series(card), rep));
         }
     } else {
         if q.series.is_some() {
             books.sort_by(vol_cmp);
+        } else if q.work.is_some() {
+            books.sort_by(format_cmp);
         }
         for b in books {
             items.push((Item::Book(b.clone()), b));
         }
     }
-    if q.series.is_none() {
+    if q.series.is_none() && q.work.is_none() {
         if matches!(sort, Sort::Title | Sort::Author) {
             // Bỏ dấu một lần cho mỗi mục rồi mới sắp (E10-03: 50k mục).
             let mut keyed: Vec<(String, String, (Item, BookCard))> =
@@ -354,7 +436,7 @@ pub fn facets(conn: &Connection) -> Result<Facets> {
 /// Đánh dấu "không đáng đọc" (`true`: ẩn khỏi thư viện, chuyển sang mục riêng) hoặc đưa lại vào thư viện (`false`).
 /// Ghi lại thời điểm để đồng bộ với iPad/iPhone/Android ("ai đổi sau thắng"). Trả về số cuốn đã đổi.
 pub fn set_not_worth(conn: &Connection, ids: &[i64], not_worth: bool) -> Result<usize> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     let t = crate::db::now();
     let mut n = 0;
     for id in ids {
@@ -373,7 +455,7 @@ pub fn set_read_status(conn: &Connection, ids: &[i64], status: &str) -> Result<(
     if !["unread", "reading", "read"].contains(&status) {
         return Err(crate::Error::msg("trạng thái đọc không hợp lệ"));
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     for id in ids {
         tx.execute(
             "UPDATE books SET read_status = ?2, last_read_at = CASE WHEN ?2 = 'unread' THEN last_read_at ELSE ?3 END,

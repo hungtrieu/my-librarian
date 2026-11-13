@@ -99,7 +99,7 @@ fn setup(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     let cur: usize = conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? as usize;
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(cur) {
-        let tx = conn.unchecked_transaction()?;
+        let tx = crate::db::write_tx(conn)?;
         tx.execute_batch(sql)?;
         tx.pragma_update(None, "user_version", (i + 1) as i64)?;
         tx.commit()?;
@@ -359,7 +359,7 @@ pub struct Removed {
 /// Xoá khỏi iPad (I1-07). Giữ vị trí đọc. Không đụng file gốc của sách mở tại chỗ.
 pub fn remove_books(conn: &Connection, ids: &[i64]) -> Result<Removed> {
     let mut out = Removed { count: 0, freed_bytes: 0, files_to_delete: vec![] };
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     for &id in ids {
         if let Some(b) = tx
             .query_row("SELECT size, location, in_place FROM books WHERE id = ?1", [id], |r| {
@@ -486,7 +486,7 @@ pub fn remote_ids(conn: &Connection, library_id: &str) -> Result<Vec<i64>> {
 
 /// Đánh dấu "không đáng đọc" (`true`) hoặc đưa lại vào thư viện (`false`). Trả về số cuốn đã đổi.
 pub fn set_not_worth(conn: &Connection, ids: &[i64], not_worth: bool) -> Result<usize> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     let t = now();
     let mut n = 0;
     for &id in ids {
@@ -537,7 +537,7 @@ pub fn apply_worth_marks(
     sent: &[crate::sync_proto::WorthMark],
 ) -> Result<usize> {
     let sent: std::collections::HashMap<i64, i64> = sent.iter().map(|m| (m.book_id, m.changed_at)).collect();
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::db::write_tx(conn)?;
     let mut n = 0;
     for m in theirs.iter().filter(|m| m.changed_at > 0) {
         let Some(sha) = tx

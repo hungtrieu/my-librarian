@@ -21,6 +21,13 @@ use std::time::{Duration, Instant};
 /// Đứng yên quá lâu thì dừng quét và báo lỗi.
 pub const STALL_LIMIT: Duration = Duration::from_secs(60);
 
+/// Hai lần đọc nhịp liên tiếp của bộ giám sát (bình thường cách nhau ≤ 200 ms) mà cách nhau quá khoảng này thì
+/// chính luồng giám sát đã bị đóng băng – máy ngủ / Modern Standby (Windows treo cả tiến trình desktop, còn
+/// `Instant` vẫn đếm thời gian ngủ), hoặc cả tiến trình bị dừng. Khi đó luồng quét cũng đứng cùng lúc, không phải
+/// lỗi của nó: khoảng đóng băng không tính vào thời gian đứng yên. (Lần 13/11/2026: máy vào Modern Standby
+/// 23 phút giữa bước phân loại, vừa thức dậy thì báo "treo 1408 giây" và huỷ một lần quét đang chạy tốt.)
+pub const SUSPEND_GAP: Duration = Duration::from_secs(5);
+
 static PULSE: AtomicU64 = AtomicU64::new(0);
 
 /// Báo "vẫn đang làm việc" (rẻ: một phép cộng nguyên tử). Gọi được từ mọi luồng.
@@ -60,6 +67,7 @@ pub fn phase_label(phase: &str) -> &'static str {
         "triage_clean" => "Dọn hộp thư đến",
         "hash_quick" => "Băm nhanh",
         "hash_full" => "Băm đầy đủ",
+        "suspect_hash" => "Băm bổ sung cho nghi trùng",
         "analyze" => "Phân tích trùng & thể loại",
         "start" => "Bắt đầu",
         _ => "Bước không rõ",
@@ -76,6 +84,10 @@ pub struct Watch {
     pub detail: Option<String>,
     pulse: u64,
     since: Instant,
+    /// Lần [`Watch::tick`] gần nhất – để nhận ra khoảng bộ giám sát bị đóng băng.
+    last_tick: Instant,
+    /// Tổng thời gian đóng băng đã bỏ qua (ghi log / test).
+    pub suspended: Duration,
 }
 
 impl Watch {
@@ -83,7 +95,16 @@ impl Watch {
         if let Ok(mut g) = CURRENT.lock() {
             *g = None;
         }
-        Watch { phase: "start", done: 0, total: 0, detail: None, pulse: pulses(), since: now }
+        Watch {
+            phase: "start",
+            done: 0,
+            total: 0,
+            detail: None,
+            pulse: pulses(),
+            since: now,
+            last_tick: now,
+            suspended: Duration::ZERO,
+        }
     }
     /// Ghi nhận một `Step`; chỉ tính là tiến triển khi đổi bước hoặc `done` đổi.
     pub fn step(&mut self, s: Step, now: Instant) {
@@ -97,8 +118,17 @@ impl Watch {
         self.done = s.done;
         self.total = s.total;
     }
-    /// Đọc nhịp hiện tại; trả về thời gian đứng yên.
+    /// Đọc nhịp hiện tại; trả về thời gian đứng yên. Khoảng giữa hai lần gọi dài hơn [`SUSPEND_GAP`] là máy
+    /// ngủ / tiến trình bị đóng băng (xem hằng số) → không tính vào thời gian đứng yên.
     pub fn tick(&mut self, pulse: u64, now: Instant) -> Duration {
+        let gap = now.saturating_duration_since(self.last_tick);
+        self.last_tick = now;
+        if gap > SUSPEND_GAP {
+            self.suspended += gap;
+            // dời mốc "từ lúc" qua khoảng đóng băng, giữ phần đứng yên thật trước đó
+            self.since = (self.since + gap).min(now);
+            tracing::info!("bộ giám sát quét bị đóng băng {}s (máy ngủ?) – không tính là treo", gap.as_secs());
+        }
         if pulse != self.pulse {
             self.pulse = pulse;
             self.since = now;
@@ -157,6 +187,20 @@ impl Watchdog {
     /// `cancel`: cờ huỷ của tiến trình quét – bật lên khi phát hiện treo.
     /// `on_tick`: gọi mỗi giây với tình trạng hiện tại (vd. gửi lên giao diện).
     pub fn start(cancel: Arc<AtomicBool>, limit: Duration, on_tick: impl Fn(&Health) + Send + 'static) -> Watchdog {
+        Self::start_with(cancel, limit, on_tick, |_| {})
+    }
+
+    /// Như [`Watchdog::start`], thêm `on_stall`: gọi **một lần, trên luồng giám sát**, ngay khi phát hiện treo.
+    ///
+    /// Bật cờ huỷ chỉ có tác dụng khi luồng quét tới chỗ kiểm tra kế tiếp; nếu nó kẹt trong một lệnh không bao giờ
+    /// trả về (đọc ổ USB rớt kết nối, `IFileOperation`…) thì [`Watchdog::finish`] cũng không bao giờ được gọi.
+    /// Nơi gọi dùng `on_stall` để báo lỗi và mở khoá giao diện ngay, không chờ luồng quét.
+    pub fn start_with(
+        cancel: Arc<AtomicBool>,
+        limit: Duration,
+        on_tick: impl Fn(&Health) + Send + 'static,
+        on_stall: impl FnOnce(&Stall) + Send + 'static,
+    ) -> Watchdog {
         let watch = Arc::new(Mutex::new(Watch::new(Instant::now())));
         let stall: Arc<Mutex<Option<Stall>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
@@ -166,12 +210,14 @@ impl Watchdog {
             .spawn(move || {
                 let interval = Duration::from_millis(200).min(limit / 4).max(Duration::from_millis(10));
                 let mut last_tick = Instant::now();
+                let mut on_stall = Some(on_stall);
                 while !st.load(Ordering::Relaxed) {
                     std::thread::sleep(interval);
                     let now = Instant::now();
                     let Ok(mut g) = w.lock() else { return };
                     let idle = g.tick(pulses(), now);
                     let mut stalled = s.lock().map(|x| x.is_some()).unwrap_or(false);
+                    let mut found_now = None;
                     if !stalled && idle >= limit {
                         let found = Stall {
                             phase: g.phase,
@@ -183,8 +229,9 @@ impl Watchdog {
                         tracing::error!("quét bị treo: {found}");
                         cancel.store(true, Ordering::Relaxed);
                         if let Ok(mut x) = s.lock() {
-                            *x = Some(found);
+                            *x = Some(found.clone());
                         }
+                        found_now = Some(found);
                         stalled = true;
                     }
                     if now.duration_since(last_tick) >= Duration::from_secs(1) || stalled {
@@ -198,6 +245,12 @@ impl Watchdog {
                             limit_secs: limit.as_secs(),
                             stalled,
                         });
+                    }
+                    drop(g); // không giữ khoá khi gọi ra ngoài: `observe` của luồng quét không bị chặn
+                    if let Some(found) = found_now {
+                        if let Some(f) = on_stall.take() {
+                            f(&found);
+                        }
                     }
                 }
             })
@@ -266,9 +319,18 @@ mod tests {
 
     #[test]
     fn every_phase_has_a_label() {
-        for p in
-            ["count", "scan", "recover", "triage", "triage_read", "triage_clean", "hash_quick", "hash_full", "analyze"]
-        {
+        for p in [
+            "count",
+            "scan",
+            "recover",
+            "triage",
+            "triage_read",
+            "triage_clean",
+            "hash_quick",
+            "hash_full",
+            "analyze",
+            "suspect_hash",
+        ] {
             assert_ne!(phase_label(p), "Bước không rõ", "{p}");
         }
     }

@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::hash;
 use crate::normalize::{authors_conflict, has_copy_suffix, normalize_title, series_from_name};
 use crate::trash::{trash_items, TrashItem, TrashReport, Trasher};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -195,6 +195,22 @@ impl Dsu {
 /// Phát hiện nghi trùng: cùng ISBN, hoặc cùng tên chuẩn hoá + tác giả không mâu thuẫn; nội dung khác nhau.
 /// Nhóm/cặp đã được duyệt ("không trùng", "giữ cả hai") không hiện lại, kể cả sau khi quét lại.
 pub fn suspect_groups(conn: &Connection) -> Result<Vec<SuspectGroup>> {
+    Ok(suspect_groups_with(conn, 2, None, None)?.unwrap_or_default())
+}
+
+/// Bước con báo tiến trình khi băm bổ sung cho nghi trùng.
+pub const SUSPECT_HASH_PHASE: &str = "suspect_hash";
+
+/// Như [`suspect_groups`], băm bổ sung bằng `threads` luồng, báo tiến trình [`SUSPECT_HASH_PHASE`] x / y qua `on`
+/// và dừng được bằng `cancel` (trả về `None`; phần đã băm vẫn được lưu nên lần sau chỉ băm phần còn lại).
+///
+/// Cùng một tác phẩm ở **nhiều định dạng** (vd. `.epub` + `.mobi`) không phải trùng: chỉ so các file cùng định dạng.
+pub fn suspect_groups_with(
+    conn: &Connection,
+    threads: usize,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    on: Option<crate::OnStep>,
+) -> Result<Option<Vec<SuspectGroup>>> {
     let books = db::books_where(conn, "status = 'present' ORDER BY id", [])?;
     let mut buckets: HashMap<String, (String, Vec<usize>)> = HashMap::new();
     for (i, b) in books.iter().enumerate() {
@@ -219,6 +235,9 @@ pub fn suspect_groups(conn: &Connection) -> Result<Vec<SuspectGroup>> {
         for x in 0..idx.len() {
             for y in x + 1..idx.len() {
                 let (a, b) = (&books[idx[x]], &books[idx[y]]);
+                if !a.format.eq_ignore_ascii_case(&b.format) {
+                    continue; // một tác phẩm nhiều định dạng – không phải trùng
+                }
                 if a.full_hash.is_some() && a.full_hash == b.full_hash {
                     continue; // trùng chắc chắn – xử lý ở màn khác
                 }
@@ -235,19 +254,37 @@ pub fn suspect_groups(conn: &Connection) -> Result<Vec<SuspectGroup>> {
         }
     }
     if pairs.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Some(Vec::new()));
     }
-    // Đảm bảo có dấu vân tay để ghi nhớ quyết định.
-    let involved: HashSet<usize> = pairs.iter().flat_map(|(a, b, _)| [*a, *b]).collect();
+    // Đảm bảo có dấu vân tay để ghi nhớ quyết định: băm bù (song song, lưu theo lô) những file còn thiếu.
+    let involved: Vec<usize> =
+        pairs.iter().flat_map(|(a, b, _)| [*a, *b]).collect::<HashSet<_>>().into_iter().collect();
+    let missing: Vec<i64> = involved
+        .iter()
+        .map(|&i| &books[i])
+        .filter(|b| fingerprint(b).is_none() || b.hash_size != Some(b.size) || b.hash_mtime != Some(b.mtime))
+        .map(|b| b.id)
+        .collect();
+    if !hash::ensure_quick_many(conn, &missing, threads, cancel, SUSPECT_HASH_PHASE, on)? {
+        return Ok(None);
+    }
     let mut fps: HashMap<usize, Option<String>> = HashMap::new();
-    for i in involved {
-        let b = &books[i];
-        crate::progress::working_on(std::path::Path::new(&b.path));
-        let fp = match fingerprint(b).filter(|_| b.hash_size == Some(b.size) && b.hash_mtime == Some(b.mtime)) {
-            Some(f) => Some(f),
-            None => hash::ensure_quick(conn, b.id)?.map(|q| format!("q:{}:{q}", b.size)),
-        };
-        fps.insert(i, fp);
+    {
+        let mut st =
+            conn.prepare("SELECT quick_hash FROM books WHERE id = ?1 AND hash_size IS size AND hash_mtime IS mtime")?;
+        let missing: HashSet<i64> = missing.into_iter().collect();
+        for i in involved {
+            let b = &books[i];
+            let fp = if missing.contains(&b.id) {
+                st.query_row([b.id], |r| r.get::<_, Option<String>>(0))
+                    .optional()?
+                    .flatten()
+                    .map(|q| format!("q:{}:{q}", b.size))
+            } else {
+                fingerprint(b)
+            };
+            fps.insert(i, fp);
+        }
     }
     let decided = load_decisions(conn)?;
     let mut dsu = Dsu((0..books.len()).collect());
@@ -284,7 +321,7 @@ pub fn suspect_groups(conn: &Connection) -> Result<Vec<SuspectGroup>> {
         let key = members.iter().map(|b| b.id.to_string()).collect::<Vec<_>>().join("-");
         out.push(SuspectGroup { key, reason: rs.join("; "), members });
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
 fn load_decisions(conn: &Connection) -> Result<HashSet<(String, String)>> {
