@@ -644,7 +644,7 @@ def apply_plan(root: Path, plan_csv: Path):
                 pass
     print(f"\nĐã chuyển {moved} file, bỏ qua {skipped} dòng không đánh dấu, {dup} file trùng để nguyên.")
     print(f"Hoàn tác: python -I scripts/merge-categories.py undo \"{undo_path}\"")
-    print("Nhớ bấm Quét lại trong 47 Librarian để cập nhật thư viện.")
+    print("Nhớ bấm Quét lại trong My Librarian để cập nhật thư viện.")
 
 
 def undo(log: Path):

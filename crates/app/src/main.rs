@@ -1,4 +1,4 @@
-//! 47 Librarian – app Tauri 2. Toàn bộ nghiệp vụ nằm trong `librarian-core`; file này chỉ nối IPC.
+//! My Librarian – app Tauri 2. Toàn bộ nghiệp vụ nằm trong `librarian-core`; file này chỉ nối IPC.
 //! Lệnh nặng chạy trên luồng blocking (không chặn UI); ảnh bìa phục vụ qua giao thức `cover://`
 //! (WebView2: `http://cover.localhost/<id>`) bởi một nhóm luồng riêng, sinh lười và cache trên đĩa.
 //! Trình đọc (M5) lấy nội dung sách qua giao thức `book://` (`http://book.localhost/…`): file gốc có
@@ -50,7 +50,7 @@ fn external_path(ext: &External, id: i64) -> Option<PathBuf> {
     ext.lock().ok()?.get(&id).cloned()
 }
 
-/// Đối số dòng lệnh đầu tiên là file sách tồn tại (Explorer: "Mở bằng 47 Librarian").
+/// Đối số dòng lệnh đầu tiên là file sách tồn tại (Explorer: "Mở bằng My Librarian").
 fn book_arg(args: &[String]) -> Option<String> {
     args.iter()
         .skip(1)
@@ -913,7 +913,7 @@ fn local_addrs() -> Vec<String> {
 // chuyển card mạng sang Riêng tư + thêm luật mở cổng 47470 chỉ cho mạng nội bộ.
 
 /// Tên luật tường lửa app tự thêm (bộ gỡ cài xoá theo đúng tên này – xem installer-hooks.nsh).
-const FIREWALL_RULE: &str = "47 Librarian sync (TCP 47470)";
+const FIREWALL_RULE: &str = "My Librarian sync (TCP 47470)";
 
 #[derive(Serialize, serde::Deserialize, Clone)]
 struct PublicNet {
@@ -1167,7 +1167,7 @@ fn webview_data_dir(home: &Path) -> Option<PathBuf> {
     }
     let dir = home.join("webview");
     let Some(local) = std::env::var_os("LOCALAPPDATA") else { return Some(dir) };
-    let old_root = PathBuf::from(local).join("vn.hungtrieu.librarian47");
+    let old_root = PathBuf::from(local).join("vn.hungtrieu.mylibrarian");
     let old = old_root.join("EBWebView");
     if old.is_dir() && !dir.join("EBWebView").exists() {
         let _ = config::copy_tree(&old, &dir.join("EBWebView"));
@@ -1267,7 +1267,7 @@ fn main() {
                 if let Some(dir) = webview_dir.clone() {
                     b = b.data_directory(dir);
                 }
-                b.title("47 Librarian").build()?;
+                b.title("My Librarian").build()?;
             }
             Ok(())
         })

@@ -59,7 +59,7 @@ function Get-Serial {
 function Get-InstalledVersion {
     $serial = Get-Serial
     if (-not $serial) { return $null }
-    $out = & $adb -s $serial shell dumpsys package vn.hungtrieu.librarian47.android 2>$null | Select-String 'versionName=(\d+\.\d+\.\d+)' | Select-Object -First 1
+    $out = & $adb -s $serial shell dumpsys package vn.hungtrieu.mylibrarian.android 2>$null | Select-String 'versionName=(\d+\.\d+\.\d+)' | Select-Object -First 1
     if ($out) { return $out.Matches[0].Groups[1].Value }
     return $null
 }
@@ -153,7 +153,7 @@ try {
 
 $out = Join-Path $root ("dist\android\{0}-{1}" -f $s.version, (Get-Date -Format 'yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Force $out | Out-Null
-$dest = Join-Path $out "47-Librarian-$($s.version).apk"
+$dest = Join-Path $out "My-Librarian-$($s.version).apk"
 Copy-Item $apkFile.FullName $dest
 & node scripts\release-state.mjs record android $s.version $out $s.fingerprint
 Say "XONG – bản Android $($s.version): $dest" 'Green'

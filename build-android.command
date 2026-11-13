@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build app 47 Librarian cho điện thoại Android (APK debug) – bấm đúp file này trong Finder (máy Mac), hoặc ./build-android.command
+# Build app My Librarian cho điện thoại Android (APK debug) – bấm đúp file này trong Finder (máy Mac), hoặc ./build-android.command
 # Cùng mã nguồn với bản iPad/iPhone (crates/ipad); trên Android app dùng bố cục iPhone: chỉ tải/đọc sách chữ
 # (EPUB, MOBI/AZW3, FB2, TXT), nút nhanh của trình đọc ở góc dưới trái.
 #   - Lấy code mới nhất (git pull) nếu trên Mac không có thay đổi dở.
@@ -119,7 +119,7 @@ popd >/dev/null
 
 OUT="$PWD/dist/android/$version-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
-cp "crates/ipad/$APK" "$OUT/47-Librarian-$version.apk"
+cp "crates/ipad/$APK" "$OUT/My-Librarian-$version.apk"
 node scripts/release-state.mjs record android "$version" "$OUT" "$fingerprint"
-ok "XONG – bản Android $version: $OUT/47-Librarian-$version.apk"
-install_apk "$OUT/47-Librarian-$version.apk"
+ok "XONG – bản Android $version: $OUT/My-Librarian-$version.apk"
+install_apk "$OUT/My-Librarian-$version.apk"

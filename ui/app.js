@@ -1,4 +1,4 @@
-// 47 Librarian – giao diện (không framework). Nghiệp vụ ở Rust; file này chỉ hiển thị và gọi lệnh.
+// My Librarian – giao diện (không framework). Nghiệp vụ ở Rust; file này chỉ hiển thị và gọi lệnh.
 import { h, fold, highlight, fmtBytes, fmtDate, genCover, debounce } from './ui-kit.js';
 import { openReader, readerOpen } from './reader.js';
 

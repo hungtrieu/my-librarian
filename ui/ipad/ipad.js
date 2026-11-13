@@ -1,4 +1,4 @@
-// 47 Librarian cho iPad – giao diện thư viện (I1-04..I1-08). Nghiệp vụ ở Rust (ipad_lib.rs); file này chỉ hiển thị và gọi lệnh.
+// My Librarian cho iPad – giao diện thư viện (I1-04..I1-08). Nghiệp vụ ở Rust (ipad_lib.rs); file này chỉ hiển thị và gọi lệnh.
 import { h, fmtBytes, debounce, genCover } from '../ui-kit.js';
 import { openReader } from '../reader.js';
 
@@ -15,7 +15,7 @@ const PHONE = DEV.phone ?? DEV.kind === 'iphone';
 const ANDROID = DEV.kind === 'android';
 document.body.classList.add(DEV.kind);
 if (PHONE) document.body.classList.add('iphone');
-document.title = `47 Librarian – ${DEV.name}`;
+document.title = `My Librarian – ${DEV.name}`;
 const SEARCH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>';
 
 // Lưới bìa hay danh sách: lưu trong localStorage của WebView (như tuỳ chọn trình đọc) nên giữ nguyên lần mở app sau.
@@ -273,7 +273,7 @@ function tabBar() {
 function empty() {
   return h('div', { class: 'blank' }, h('div', { class: 'big', 'aria-hidden': 'true' }, '📚'),
     h('h2', {}, S.q ? 'Không tìm thấy sách nào' : `Chưa có sách trên ${DEV.name}`),
-    S.q ? h('p', {}, `Không có kết quả cho “${S.q}”.`) : h('p', {}, 'Trên máy tính Windows mở 47 Librarian → iPad / iPhone, ghép máy này, chọn sách gửi sang, rồi quét mã QR ở đây để kết nối.'),
+    S.q ? h('p', {}, `Không có kết quả cho “${S.q}”.`) : h('p', {}, 'Trên máy tính Windows mở My Librarian → iPad / iPhone, ghép máy này, chọn sách gửi sang, rồi quét mã QR ở đây để kết nối.'),
     S.q ? null : h('button', { class: 'cta', onclick: () => go({ name: 'sync' }) }, 'Kết nối với máy tính'));
 }
 
@@ -365,7 +365,7 @@ function syncView() {
     return h('main', { class: 'syncv' },
       h('h2', {}, 'Kết nối với máy tính'),
       h('label', { class: 'dim' }, 'Tên máy này (hiện trên máy tính)'), devName,
-      h('p', { class: 'dim' }, 'Trên máy tính Windows mở 47 Librarian → iPad / iPhone → Bật kết nối, rồi quét mã QR hiện ở đó. Hai máy cần cùng mạng Wi-Fi.'),
+      h('p', { class: 'dim' }, 'Trên máy tính Windows mở My Librarian → iPad / iPhone → Bật kết nối, rồi quét mã QR hiện ở đó. Hai máy cần cùng mạng Wi-Fi.'),
       h('button', { class: 'cta', disabled: SY.busy, onclick: scanQr }, SY.busy ? 'Đang kết nối…' : 'Quét mã QR'),
       h('details', {}, h('summary', {}, 'Nhập tay'), addr, code,
         h('button', { class: 'act', onclick: () => pairWith({ addr: addr.value, code: code.value }) }, 'Ghép nối')));
@@ -379,7 +379,7 @@ function syncView() {
   } else if (SY.busy || !c) {
     card = h('div', { class: 'card2' }, h('b', {}, `Đang tìm ${st.pc_name}…`));
   } else if (!c.reachable) {
-    card = h('div', { class: 'card2' }, h('b', {}, `Không thấy ${st.pc_name}`), h('p', { class: 'dim' }, c.error || 'Kiểm tra máy tính đang bật, mở 47 Librarian và cùng mạng Wi-Fi.'),
+    card = h('div', { class: 'card2' }, h('b', {}, `Không thấy ${st.pc_name}`), h('p', { class: 'dim' }, c.error || 'Kiểm tra máy tính đang bật, mở My Librarian và cùng mạng Wi-Fi.'),
       h('button', { class: 'act', onclick: checkPc }, 'Thử lại'));
   } else {
     const n = c.items.length;

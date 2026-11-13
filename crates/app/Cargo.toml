@@ -3,10 +3,10 @@ name = "librarian-app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "47 Librarian – ứng dụng Tauri 2"
+description = "My Librarian – ứng dụng Tauri 2"
 
 [[bin]]
-name = "47-librarian"
+name = "my-librarian"
 path = "src/main.rs"
 
 [build-dependencies]

@@ -1,11 +1,11 @@
-# 47 Librarian trên iPhone – cài và dùng
+# My Librarian trên iPhone – cài và dùng
 
 App iPhone đọc sách đã gửi từ app Windows qua Wi-Fi nhà. **Không dùng App Store/TestFlight**: bạn tự build trên Mac và cài bằng Apple ID miễn phí. Hướng dẫn này đủ để cài iPhone, không cần đọc tài liệu iPad. (Cài iPad: [IPAD.md](IPAD.md).)
 
 > **Trạng thái (2026-11-10):** đã chạy thử trên iPhone Simulator (iOS 27.2). Chưa cài lên iPhone thật, chưa thử đồng bộ với Windows trên máy thật.
 
 ## Khác gì bản iPad
-Cùng một app với iPad (cùng mã nguồn, cùng Bundle ID `vn.hungtrieu.librarian47.ipad`). App tự nhận ra đang chạy trên iPhone:
+Cùng một app với iPad (cùng mã nguồn, cùng Bundle ID `vn.hungtrieu.mylibrarian.ipad`). App tự nhận ra đang chạy trên iPhone:
 - **Chỉ sách chữ:** EPUB, MOBI/AZW/AZW3, FB2, TXT. Windows không xếp PDF và truyện tranh (CBZ/CBR) vào hàng chờ của iPhone. iPhone cũng tự bỏ qua chúng nếu lỡ có trong hàng chờ.
 - **Cầm tay trái:** trong trình đọc, thanh nút nhanh nằm ở **góc dưới trái**: đánh dấu trang, mục lục / dấu trang, tìm trong sách, Aa. Nút quay lại thư viện (‹) và "⋯" ở bên phải. Ở thư viện, nút Đồng bộ và Dung lượng cũng ở bên trái.
 - Chạm giữa trang để hiện/ẩn thanh nút; chạm mép trái/phải để lật trang.
@@ -68,7 +68,7 @@ Lần đầu mở app: iPhone → Cài đặt → Cài đặt chung → **VPN & 
 **Đừng bấm Run trong Xcode** và đừng để Xcode build cùng lúc với script: luôn cài bằng script.
 
 ## Ghép với app Windows
-1. Windows: 47 Librarian → mục **iPad / iPhone** → **Bật kết nối**. Lần đầu Windows hỏi tường lửa → cho phép mạng riêng tư.
+1. Windows: My Librarian → mục **iPad / iPhone** → **Bật kết nối**. Lần đầu Windows hỏi tường lửa → cho phép mạng riêng tư.
 2. Windows: **Hiện mã QR mới** (mỗi máy một mã, mã dùng một lần, hết hạn sau 5 phút).
 3. iPhone: mở app → biểu tượng ⇅ **Đồng bộ** (góc dưới trái) → đặt **Tên máy này**, ví dụ "iPhone của Hưng". Tên này hiện trên Windows để phân biệt khi có nhiều máy. Sau đó **Quét mã QR** (cho phép camera) hoặc mở "Nhập tay" và gõ IP + mã 6 số. iOS hỏi quyền **Mạng cục bộ** → Cho phép.
 4. Windows: chuột phải sách hoặc bộ sách → **Gửi sang <tên iPhone>** (hoặc "Gửi sang tất cả … thiết bị"). PDF và truyện tranh tự bị bỏ qua cho iPhone; Windows báo số cuốn bị bỏ.
@@ -88,19 +88,19 @@ Chuột phải một cuốn có trên thiết bị → **Có trên thiết bị 
 - **Đánh dấu trang:** bấm biểu tượng dấu trang (nút đầu tiên, góc dưới trái). Biểu tượng tô cam khi trang đã có dấu; bấm lần nữa để bỏ dấu.
 - **Danh sách dấu trang:** nút mục lục (thứ hai) → thẻ **Dấu trang** → chạm để nhảy tới, ✕ để xoá.
 - Xoá sách khỏi iPhone rồi gửi lại: vị trí đọc và dấu trang vẫn còn.
-- Sách trên iPhone nằm trong app Tệp → **47 Librarian → Books**.
+- Sách trên iPhone nằm trong app Tệp → **My Librarian → Books**.
 
 ## Nếu gặp lỗi
 | Triệu chứng | Thử |
 |---|---|
 | Script báo "Không thấy iPhone" | Mở khoá iPhone, cắm cáp, bấm Tin cậy; kiểm `xcrun devicectl list devices`. Có nhiều iPhone: đặt `LIBRARIAN_IPAD_DEVICE`. |
-| `Your team has no devices` / `No profiles for 'vn.hungtrieu.librarian47.ipad'` | iPhone chưa đăng ký vào team. Script tự làm lần đầu. Vẫn lỗi: cắm cáp, mở khoá iPhone, chạy lại. |
+| `Your team has no devices` / `No profiles for 'vn.hungtrieu.mylibrarian.ipad'` | iPhone chưa đăng ký vào team. Script tự làm lần đầu. Vẫn lỗi: cắm cáp, mở khoá iPhone, chạy lại. |
 | `errSecInternalComponent` / ".app chưa được ký hợp lệ" | Chạy script trong Terminal trên Mac (không qua SSH). Vẫn lỗi: xem dòng này trong bảng lỗi của [IPAD.md](IPAD.md) (cách sửa giống hệt). |
 | Không thấy mục Chế độ nhà phát triển | Ghép iPhone với Mac (bước 4), chạy `./build-iphone.command` một lần, rồi mở lại Cài đặt. |
 | Mở app báo không tin cậy / văng ngay | Hết 7 ngày → chạy lại script; hoặc chưa tin cậy Apple ID (VPN & Quản lý thiết bị). |
-| "Không thấy máy tính" | Windows đang chạy 47 Librarian và đã bật kết nối? Cùng Wi-Fi? Tường lửa cho phép? IP máy tính đổi → ghép lại. |
+| "Không thấy máy tính" | Windows đang chạy My Librarian và đã bật kết nối? Cùng Wi-Fi? Tường lửa cho phép? IP máy tính đổi → ghép lại. |
 | Gửi sách mà iPhone không tải | Sách là PDF/truyện tranh (iPhone không nhận). Hoặc đã gửi nhầm sang máy khác: xem hàng chờ từng máy trên Windows. |
-| Camera không bật | Cài đặt → 47 Librarian → Camera. Hoặc nhập tay IP + mã. |
+| Camera không bật | Cài đặt → My Librarian → Camera. Hoặc nhập tay IP + mã. |
 
 ## Kiểm tay trên iPhone thật
 1. Gửi 1 EPUB → tải xong → mở đọc, lật trang, thoát, mở lại đúng chỗ.

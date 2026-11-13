@@ -1,4 +1,4 @@
-//! 47 Librarian cho iPad / iPhone (Tauri 2 iOS) và điện thoại Android (Tauri 2 Android). Lệnh `lib_*` bọc `librarian_core::ipad_lib`; giao thức `book://`
+//! My Librarian cho iPad / iPhone (Tauri 2 iOS) và điện thoại Android (Tauri 2 Android). Lệnh `lib_*` bọc `librarian_core::ipad_lib`; giao thức `book://`
 //! phục vụ nội dung sách cho trình đọc dùng chung (`reader.js`) giống app Windows.
 
 use librarian_core::ipad_lib::{self, Bookmark, IpadBook, Item, ReaderInfo, Removed, Sort, Usage};
@@ -287,7 +287,7 @@ async fn sync_pair(
     device_name: Option<String>,
 ) -> CmdResult<SyncState> {
     let qr: PairQr = match payload {
-        Some(p) => serde_json::from_str(&p).map_err(|_| "Mã QR không phải của 47 Librarian".to_string())?,
+        Some(p) => serde_json::from_str(&p).map_err(|_| "Mã QR không phải của My Librarian".to_string())?,
         None => {
             let a = addr.unwrap_or_default();
             let (host, port) = match a.rsplit_once(':') {
@@ -669,7 +669,7 @@ pub fn run() {
         sync_cancel
     ])
     .run(tauri::generate_context!())
-    .expect("lỗi khi chạy 47 Librarian iPad");
+    .expect("lỗi khi chạy My Librarian iPad");
 }
 
 #[cfg(test)]

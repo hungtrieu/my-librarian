@@ -1,4 +1,4 @@
-# Backlog – 47 Librarian
+# Backlog – My Librarian
 
 Trạng thái: **Đang làm – M1–M4 xong (lõi, CLI, giao diện thư viện), M5 phần lớn xong (trình đọc trong app), M7 xong phần làm được trên máy (bộ cài, sao lưu, đo hiệu năng) – còn chạy thử trên kho thật** (xem [mục 10](#10-tiến-độ)). Cập nhật theo các quyết định ngày 2026-11-06; tiến độ M5 và M7 ngày 2026-11-07. Phần này **thay thế** mục 3.8, 6 và 8 của [BRD.md](BRD.md) ở những chỗ mâu thuẫn.
 
@@ -36,7 +36,7 @@ Cột **Trạng thái**: ✅ Xong · 🟡 Lõi xong (chưa có giao diện) / M�
 ## 2. Kiến trúc đề xuất
 
 ```
-47-librarian/
+my-librarian/
 ├─ crates/
 │  ├─ core/        # thư viện Rust thuần: scan, metadata, DB, dedupe, classify, trash (không phụ thuộc UI)
 │  ├─ scanner-cli/ # binary không cửa sổ cho tác vụ ngầm (dùng chung core)
@@ -46,7 +46,7 @@ Cột **Trạng thái**: ✅ Xong · 🟡 Lõi xong (chưa có giao diện) / M�
 ```
 - **Chia lõi riêng (`core`)** để test được bằng `cargo test` không cần giao diện (vẫn chạy được trên Linux/Mac nếu cần), phần phụ thuộc Windows nằm sau trait (`Trasher`, `Scheduler`).
 - **DB:** SQLite (rusqlite, bundled) + FTS5, chế độ WAL để app và tác vụ ngầm cùng đọc/ghi.
-- **Lưu dữ liệu app** tại `%APPDATA%\47-librarian\` (DB, thumbnail cache, log, config). Không ghi gì vào ổ sách ngoài chính các file sách bạn duyệt di chuyển/xoá.
+- **Lưu dữ liệu app** tại `%APPDATA%\my-librarian\` (DB, thumbnail cache, log, config). Không ghi gì vào ổ sách ngoài chính các file sách bạn duyệt di chuyển/xoá.
 - **Stream file cho trình đọc** qua custom protocol của Tauri có hỗ trợ HTTP Range; **không** nạp cả file 500 MB vào RAM của webview.
 - **Băm:** lọc theo dung lượng → băm nhanh đầu/giữa/cuối → băm đầy đủ chỉ cho ứng viên. Thuật toán (SHA-256 hay BLAKE3) chốt sau spike S5; cả hai đều đủ chắc chắn để coi là "giống từng byte".
 - **Tác vụ ngầm:** Task Scheduler chạy `scanner-cli.exe` (subsystem `windows`, không hiện console).
@@ -178,7 +178,7 @@ Nguyên tắc UI/UX học theo Apple Books: giao diện tối giản, **ẩn tha
 | ID | Story | Tiêu chí nghiệm thu | Ưu tiên | Cỡ | Trạng thái |
 |---|---|---|---|---|---|
 | E8-01 | `scanner-cli.exe`: quét + dedupe + phân loại đề xuất, **chế độ chỉ đọc** với sách (không xoá, không di chuyển) và chỉ ghi vào DB/log | Chạy xong không file sách nào thay đổi (test so sánh cây thư mục) | P0 | M | ✅ Xong |
-| E8-02 | Cài/gỡ lịch trong Task Scheduler từ Cài đặt (tên tác vụ `47 Librarian - Quet ngam` – bộ cài NSIS đã gỡ tác vụ này khi gỡ app): giờ chạy, chạy ẩn, ưu tiên thấp, **chạy bù nếu lỡ giờ**, chỉ chạy khi ổ sách đã cắm | Máy tắt lúc 3h → bật lên chạy bù; không cửa sổ nhấp nháy | P0 | M | ⬜ |
+| E8-02 | Cài/gỡ lịch trong Task Scheduler từ Cài đặt (tên tác vụ `My Librarian - Quet ngam` – bộ cài NSIS đã gỡ tác vụ này khi gỡ app): giờ chạy, chạy ẩn, ưu tiên thấp, **chạy bù nếu lỡ giờ**, chỉ chạy khi ổ sách đã cắm | Máy tắt lúc 3h → bật lên chạy bù; không cửa sổ nhấp nháy | P0 | M | ⬜ |
 | E8-03 | Khoá chống quét chồng (app đang quét thì tác vụ ngầm thoát êm, và ngược lại); DB WAL cho phép app đọc khi quét | Chạy đồng thời không lỗi, không hỏng DB | P0 | M | ✅ Xong |
 | E8-04 | Kết quả mỗi lần quét lưu thành "báo cáo": trùng chắc chắn mới, nghi trùng mới, sách mới cần phân loại, sách mất, lỗi đọc file | Lịch sử báo cáo xem lại được | P0 | M | ✅ Xong |
 | E8-05 | Công tắc "tự động dọn trùng chắc chắn khi quét ngầm" – **mặc định TẮT**, có cảnh báo; chỉ khi bạn tự bật | Mặc định không bao giờ tự xoá | P2 | S | ✅ Xong |
@@ -270,7 +270,7 @@ Cập nhật 2026-11-06. Trạng thái từng story nằm ở cột **Trạng th
 **M5 (trình đọc trong app, 2026-11-07):** `ui/reader.js` + `ui/reader.css`, lõi `crates/core/src/reader.rs`, giao thức `book://` trong `crates/app`.
 - Khung kiểu Apple Books: thanh trên/dưới mờ nền, tự ẩn (chạm giữa / đưa chuột lên mép để hiện), chạm mép trái/phải lật trang, thanh trượt vị trí kèm xem trước trang, mục lục, tìm trong sách, bảng "Aa" (Trắng / Sepia / Xám / Đêm / theo Windows, cỡ chữ, phông, giãn dòng, lề, căn đều, lật trang/cuộn), F11 toàn màn hình, Esc về thư viện, Delete xoá vào Thùng rác (E7-14).
 - **EPUB/MOBI/AZW/AZW3/FB2:** foliate-js (MIT, vendor ở `ui/vendor/foliate-js`, ghi phiên bản + một sửa nhỏ ở `VERSION.txt`). Tìm có/không dấu ("giot nuoc" ra "giọt nước"), kết quả có ngữ cảnh, nhảy tới và tô sáng.
-- **CBZ/CBR:** Rust phục vụ từng trang (`book.localhost/<id>/page/<n>`), không nạp cả file vào webview. CBR dạng RAR giải nén **một lần** vào `%APPDATA%\47-librarian\cache\rar` (giữ 4 cuốn gần nhất) bằng crate `unrar`; bìa và số trang của CBR-RAR cũng đã lấy được. Trang đơn / trang đôi (bìa đứng riêng) / tự động, vừa trang / vừa chiều rộng, phải-sang-trái (manga), cuộn dọc liên tục (webtoon), tải trước 3 trang.
+- **CBZ/CBR:** Rust phục vụ từng trang (`book.localhost/<id>/page/<n>`), không nạp cả file vào webview. CBR dạng RAR giải nén **một lần** vào `%APPDATA%\my-librarian\cache\rar` (giữ 4 cuốn gần nhất) bằng crate `unrar`; bìa và số trang của CBR-RAR cũng đã lấy được. Trang đơn / trang đôi (bìa đứng riêng) / tự động, vừa trang / vừa chiều rộng, phải-sang-trái (manga), cuộn dọc liên tục (webtoon), tải trước 3 trang.
 - **PDF:** pdf.js 5.5 (đi kèm foliate-js) qua `PDFDataRangeTransport`: chỉ xin từng khúc 1 MB theo HTTP Range (S2). Cuộn liên tục (vẽ lười, giữ ~10 canvas) hoặc từng trang, zoom (Ctrl +/−/0, Ctrl+lăn chuột), mục lục từ outline, tìm không dấu, chế độ đêm/sepia bằng bộ lọc màu.
 - **TXT:** cột chữ cuộn, tự nhận UTF-8 / Windows-1258. **DJVU:** chưa có thư viện web phù hợp → mở bằng ứng dụng mặc định và báo rõ (phương án dự phòng của S4).
 - **Nhớ vị trí (E7-06):** CFI (foliate) hoặc `page:<n>`; ≥ 99,5% → "Đã đọc"; sách đã đọc mở lại vẫn giữ "Đã đọc". Đóng trình đọc: lưới thư viện cập nhật % mà giữ nguyên chỗ đang cuộn.
@@ -280,7 +280,7 @@ Cập nhật 2026-11-06. Trạng thái từng story nằm ở cột **Trạng th
 
 **Kiểm thử:** 49 test tự động (24 unit lõi, 18 tích hợp, 5 tích hợp trình đọc, 1 tích hợp "không đọc được" dùng file RAR mẫu `crates/core/tests/fixtures/rar-comic.cbr`, 1 test HTTP Range ở app) + 1 test Thùng rác Windows thật (`--ignored`). clippy `-D warnings` sạch. Trình đọc đã thử trên trình duyệt với file mẫu: mở đủ EPUB/MOBI/AZW3/FB2/CBZ/PDF/TXT, mục lục, tìm, lưu/khôi phục vị trí, trang đôi, manga, chuyển vol, thẻ hết sách. **Chưa thử trên app Tauri thật (WebView2)** và chưa kiểm bằng mắt các phần cần vẽ: hoạt ảnh lật trang, canvas PDF, cuộn dọc webtoon (khung xem trước bị ẩn khi thử).
 **M7 (đóng gói, chất lượng, hiệu năng – 2026-11-07):**
-- **Bộ cài (E10-01):** `scripts\ci.ps1` tạo `.msi` (WiX) và `-setup.exe` (NSIS, giao diện tiếng Việt, cài cho riêng tài khoản) trong `dist\`. Bộ cài kèm `librarian.exe`, `librarian-bg.exe` (cấu hình riêng cho lúc đóng gói: `crates/app/tauri.bundle.conf.json`, để build thường không đòi file release). Đăng ký "Mở bằng 47 Librarian" cho `.epub .mobi .azw .azw3 .fb2 .cbz .cbr .pdf .djvu`; bấm đúp file khi app đang mở thì chuyển vào cửa sổ đang chạy (single-instance); file nằm ngoài thư viện vẫn đọc được, không ghi vào DB. Gỡ bằng NSIS: tick "Delete the application data" thì xoá `%APPDATA%\47-librarian` (hook `crates/app/installer-hooks.nsh`), đồng thời gỡ tác vụ quét ngầm nếu có; sách không bị đụng tới. Bộ cài MSI không có lựa chọn xoá dữ liệu. Chuỗi trong MSI phải không dấu (WiX dùng bảng mã 1252).
+- **Bộ cài (E10-01):** `scripts\ci.ps1` tạo `.msi` (WiX) và `-setup.exe` (NSIS, giao diện tiếng Việt, cài cho riêng tài khoản) trong `dist\`. Bộ cài kèm `librarian.exe`, `librarian-bg.exe` (cấu hình riêng cho lúc đóng gói: `crates/app/tauri.bundle.conf.json`, để build thường không đòi file release). Đăng ký "Mở bằng My Librarian" cho `.epub .mobi .azw .azw3 .fb2 .cbz .cbr .pdf .djvu`; bấm đúp file khi app đang mở thì chuyển vào cửa sổ đang chạy (single-instance); file nằm ngoài thư viện vẫn đọc được, không ghi vào DB. Gỡ bằng NSIS: tick "Delete the application data" thì xoá `%APPDATA%\my-librarian` (hook `crates/app/installer-hooks.nsh`), đồng thời gỡ tác vụ quét ngầm nếu có; sách không bị đụng tới. Bộ cài MSI không có lựa chọn xoá dữ liệu. Chuỗi trong MSI phải không dấu (WiX dùng bảng mã 1252).
 - **Không đọc được (E10-04):** mục riêng ở thanh bên liệt kê sách có lỗi đọc lúc quét hoặc có DRM, kèm lý do; trình đọc gặp file hỏng thì báo lỗi kèm nút mở bằng app khác.
 - **Sao lưu DB (E10-06):** app và tác vụ ngầm sao lưu mỗi ngày (`VACUUM INTO`, giữ 7 bản ở `backups\`). Khi mở mà `library.db` hỏng: cất file hỏng thành `library.db.corrupt-<thời gian>`, khôi phục từ bản sao lưu mới nhất còn dùng được (không có thì tạo DB mới) và báo một lần trong app.
 - **Hiệu năng (E10-03):** `librarian bench --books 50000` đo trên kho tổng hợp; kết quả và ngưỡng ở [PERF.md](PERF.md). 50k sách: quét lại 0,6 s, tìm 3,6 ms, lưới sắp theo tên 237 ms (đã tối ưu từ 670 ms). Chưa đo kho thật / RAM khi mở PDF lớn.

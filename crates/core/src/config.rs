@@ -94,7 +94,7 @@ impl Config {
 /// 1. biến `LIBRARIAN_HOME`;
 /// 2. `<thư mục cài>\data` – khi chạy từ bản cài bằng bộ cài (có `uninstall.exe` cạnh exe) hoặc đã có sẵn
 ///    thư mục `data` cạnh exe. Cài app ở ổ E thì mọi thứ (DB, ảnh bìa, cache, log, WebView) nằm ở ổ E, không làm đầy ổ C;
-/// 3. `%APPDATA%\47-librarian` (bản dev, bản MSI cài vào Program Files, hoặc thư mục cài không ghi được).
+/// 3. `%APPDATA%\my-librarian` (bản dev, bản MSI cài vào Program Files, hoặc thư mục cài không ghi được).
 pub fn default_home() -> PathBuf {
     if let Some(h) = std::env::var_os("LIBRARIAN_HOME") {
         return PathBuf::from(h);
@@ -102,9 +102,9 @@ pub fn default_home() -> PathBuf {
     install_home().unwrap_or_else(legacy_home)
 }
 
-/// Chỗ dữ liệu cũ (trước khi dữ liệu theo thư mục cài): `%APPDATA%\47-librarian`.
+/// Chỗ dữ liệu cũ (trước khi dữ liệu theo thư mục cài): `%APPDATA%\my-librarian`.
 pub fn legacy_home() -> PathBuf {
-    dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("47-librarian")
+    dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("my-librarian")
 }
 
 fn install_home() -> Option<PathBuf> {
@@ -124,7 +124,7 @@ fn install_home_in(exe_dir: &Path) -> Option<PathBuf> {
     Some(data)
 }
 
-/// Lần đầu chạy bản dữ-liệu-theo-thư-mục-cài: chép dữ liệu cũ ở `%APPDATA%\47-librarian` sang `home` rồi xoá bản cũ.
+/// Lần đầu chạy bản dữ-liệu-theo-thư-mục-cài: chép dữ liệu cũ ở `%APPDATA%\my-librarian` sang `home` rồi xoá bản cũ.
 /// Không làm gì nếu đặt `LIBRARIAN_HOME`, `home` chính là chỗ cũ, chỗ cũ không có DB, hoặc `home` đã có DB.
 /// Trả về thư mục cũ nếu đã chuyển.
 pub fn migrate_legacy_home(home: &Path) -> std::io::Result<Option<PathBuf>> {

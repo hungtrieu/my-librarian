@@ -10,7 +10,7 @@ const rep = (from, to) => {
   s = s.replace(from, to);
 };
 
-const SPARSE = `// [47 Librarian] Bộ nhớ thưa cho ChunkedStream: chỉ giữ các khúc đã tải (tối đa SparseBytes.MAX_BYTES,
+const SPARSE = `// [My Librarian] Bộ nhớ thưa cho ChunkedStream: chỉ giữ các khúc đã tải (tối đa SparseBytes.MAX_BYTES,
 // bỏ khúc dùng lâu nhất khi vượt), để mở được PDF lớn hơn giới hạn ArrayBuffer (~2 GB) mà không tốn RAM.
 class SparseBytes {
   static MAX_BYTES = 384 * 1024 * 1024;

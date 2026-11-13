@@ -1,4 +1,4 @@
-//! `librarian` – CLI cho lõi 47 Librarian (dùng để thử trên kho thật trước khi có giao diện).
+//! `librarian` – CLI cho lõi My Librarian (dùng để thử trên kho thật trước khi có giao diện).
 //! Mọi thao tác xoá/di chuyển đều xem trước; chỉ thực hiện khi có `--yes`.
 
 use clap::{Parser, Subcommand};
@@ -16,9 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "librarian", version, about = "47 Librarian – quản lý kho ebook")]
+#[command(name = "librarian", version, about = "My Librarian – quản lý kho ebook")]
 struct Cli {
-    /// Thư mục dữ liệu app (mặc định %APPDATA%\47-librarian).
+    /// Thư mục dữ liệu app (mặc định %APPDATA%\my-librarian).
     #[arg(long, global = true)]
     home: Option<PathBuf>,
     /// Chế độ chỉ đọc cho lần chạy này: không xoá/di chuyển file nào.
@@ -642,7 +642,7 @@ fn run(cli: Cli, home: PathBuf) -> Result<()> {
 
 fn bench(n: usize, threads: usize, dir: Option<PathBuf>, keep: bool, json: bool) -> Result<()> {
     use librarian_core::bench;
-    let work = dir.unwrap_or_else(std::env::temp_dir).join(format!("47-librarian-bench-{}", db::now()));
+    let work = dir.unwrap_or_else(std::env::temp_dir).join(format!("my-librarian-bench-{}", db::now()));
     if work.exists() {
         return Err(librarian_core::Error::msg(format!("{} đã tồn tại", work.display())));
     }

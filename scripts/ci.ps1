@@ -113,7 +113,7 @@ if ($Toolchain -eq 'gnu') {
 
 $sha = (& git rev-parse --short HEAD 2>$null)
 $dirty = [bool](& git status --porcelain 2>$null)
-Write-Log "47 Librarian CI · $stamp · toolchain $Toolchain · commit $sha$(if ($dirty) { ' (có thay đổi chưa commit)' })"
+Write-Log "My Librarian CI · $stamp · toolchain $Toolchain · commit $sha$(if ($dirty) { ' (có thay đổi chưa commit)' })"
 Write-Log (& rustc --version)
 
 # ---------------------------------------------------------------- các bước
@@ -148,7 +148,7 @@ if (-not $Quick) {
     # Lưu bản build: dist\<phiên bản>-<thời gian>-<commit>\
     $out = Join-Path $root "dist\$Version-$stamp-$sha"
     New-Item -ItemType Directory -Force $out | Out-Null
-    foreach ($exe in '47-librarian.exe', 'librarian.exe', 'librarian-bg.exe') {
+    foreach ($exe in 'my-librarian.exe', 'librarian.exe', 'librarian-bg.exe') {
         $p = Join-Path $root "target\release\$exe"
         if (Test-Path $p) { Copy-Item $p $out }
     }

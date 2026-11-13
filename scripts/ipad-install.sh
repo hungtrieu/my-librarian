@@ -19,7 +19,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 : "${LIBRARIAN_IPAD_TEAM:?Đặt LIBRARIAN_IPAD_TEAM=<Team ID> (xem docs/IPAD.md)}"
 export APPLE_DEVELOPMENT_TEAM="$LIBRARIAN_IPAD_TEAM"
-BUNDLE_ID=vn.hungtrieu.librarian47.ipad
+BUNDLE_ID=vn.hungtrieu.mylibrarian.ipad
 KIND="${LIBRARIAN_DEVICE_KIND:-iPad}"
 case "$KIND" in iPad|iPhone) ;; *) echo "LIBRARIAN_DEVICE_KIND phải là iPad hoặc iPhone"; exit 1 ;; esac
 
@@ -62,8 +62,8 @@ set_bool() { pb "Delete :$1"; pb "Add :$1 bool true"; }
 set_str() { pb "Delete :$1"; pb "Add :$1 string $2"; }
 set_bool UIFileSharingEnabled
 set_bool LSSupportsOpeningDocumentsInPlace
-set_str NSCameraUsageDescription "Quét mã QR để ghép nối với 47 Librarian trên máy tính"
-set_str NSLocalNetworkUsageDescription "Kết nối với 47 Librarian trên máy tính trong mạng Wi-Fi để tải sách"
+set_str NSCameraUsageDescription "Quét mã QR để ghép nối với My Librarian trên máy tính"
+set_str NSLocalNetworkUsageDescription "Kết nối với My Librarian trên máy tính trong mạng Wi-Fi để tải sách"
 
 # Personal Team chỉ cấp provisioning profile cho thiết bị đã đăng ký vào team. `cargo tauri ios build` build cho
 # "Any iOS Device" nên không tự đăng ký → lỗi "Your team has no devices". Lần đầu: gọi xcodebuild với đúng iPad để
@@ -130,7 +130,7 @@ EXPIRES=$(plutil -extract ExpirationDate raw -o - "$PROFILE_PLIST" 2>/dev/null |
 NDEV=$(plutil -extract ProvisionedDevices json -o - "$PROFILE_PLIST" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).length)}catch{console.log("?")}})')
 LEFT=$(node -e 'const t=Date.parse(process.argv[1]);console.log(isNaN(t)?"?":((t-Date.now())/864e5).toFixed(1))' "$EXPIRES")
 VER_TAG="${LIBRARIAN_IPAD_VERSION:-dev}"
-IPA_NAME="47-Librarian-$VER_TAG.ipa"
+IPA_NAME="My-Librarian-$VER_TAG.ipa"
 mkdir -p "$TMP/ipa/Payload"
 ditto "$APP" "$TMP/ipa/Payload/$(basename "$APP")"
 ( cd "$TMP/ipa" && zip -qry "$TMP/$IPA_NAME" Payload ) || { echo "Không tạo được .ipa"; exit 1; }

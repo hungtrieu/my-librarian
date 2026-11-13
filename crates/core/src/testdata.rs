@@ -171,7 +171,7 @@ pub fn write_pdf(path: &Path, title: Option<&str>, author: Option<&str>, filler:
     if let Some(a) = author {
         info.push_str(&format!(" /Author {}", pdf_text(a)));
     }
-    info.push_str(" /Producer (47 Librarian test) >>");
+    info.push_str(" /Producer (My Librarian test) >>");
     let objs = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),

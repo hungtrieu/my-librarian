@@ -1,4 +1,4 @@
-//! 47 Librarian – lõi quản lý kho ebook (không phụ thuộc UI).
+//! My Librarian – lõi quản lý kho ebook (không phụ thuộc UI).
 //!
 //! Luồng chính: [`scan::scan`] → [`hash::ensure_hashes`] → [`dedupe`] / [`classify`] → [`trash`] / [`moves`].
 //! [`report::run_analysis`] gói cả chuỗi cho tác vụ quét ngầm (chỉ đọc với file sách).

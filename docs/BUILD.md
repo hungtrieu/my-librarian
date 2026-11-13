@@ -11,7 +11,7 @@ Không có thay đổi thì script không build gì, chỉ báo và chỉ ra b�
 
 Bấm đúp **`build-windows.cmd`** ở thư mục gốc của dự án, rồi đợi 5–10 phút.
 
-- **Xong:** thư mục chứa bộ cài tự mở ra (`dist\<phiên bản>-…\`). Đóng 47 Librarian rồi chạy file `…-setup.exe` trong đó. Bản mới cài đè lên bản cũ, dữ liệu thư viện giữ nguyên.
+- **Xong:** thư mục chứa bộ cài tự mở ra (`dist\<phiên bản>-…\`). Đóng My Librarian rồi chạy file `…-setup.exe` trong đó. Bản mới cài đè lên bản cũ, dữ liệu thư viện giữ nguyên.
 - **Không có thay đổi:** script báo "không build gì" và mở thư mục bộ cài mới nhất.
 - **Hỏng:** script báo đỏ, không tăng phiên bản. Gửi nội dung file `target\ci\latest.log` để xem lỗi.
 

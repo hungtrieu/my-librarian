@@ -1,4 +1,4 @@
-# 47 Librarian trên điện thoại Android – cài và dùng
+# My Librarian trên điện thoại Android – cài và dùng
 
 App Android đọc sách đã gửi từ app Windows qua Wi-Fi nhà. **Không dùng Google Play**: bạn tự build file APK trên Mac rồi cài lên điện thoại (qua cáp, hoặc chép file APK sang). Hướng dẫn này đủ để cài Android, không cần đọc tài liệu iPad/iPhone. (Cài iPhone: [IPHONE.md](IPHONE.md), iPad: [IPAD.md](IPAD.md).)
 
@@ -13,7 +13,7 @@ Cùng mã nguồn với bản iPad/iPhone (`crates/ipad`, giao diện `ui/ipad/`
 Riêng Android:
 - **Nút / cử chỉ Quay lại** của hệ thống đóng lớp trên cùng: bảng chọn → bảng mục lục/tìm kiếm trong trình đọc → trình đọc → trang Đồng bộ / bộ sách. Ở trang Thư viện thì thoát app.
 - **Không hết hạn 7 ngày** như iPhone. Cài một lần dùng mãi; chỉ cần build lại khi có code mới.
-- App có mã riêng `vn.hungtrieu.librarian47.android` (đặt ở `crates/ipad/tauri.android.conf.json`). Cần Android 8.0 trở lên.
+- App có mã riêng `vn.hungtrieu.mylibrarian.android` (đặt ở `crates/ipad/tauri.android.conf.json`). Cần Android 8.0 trở lên.
 - Sách nằm trong vùng dữ liệu riêng của app (`…/Android/data` không thấy; không hiện trong app Tệp). Gỡ app là mất sách đã tải, nhưng gửi lại từ máy tính được.
 
 ## Chuẩn bị một lần trên Mac
@@ -52,7 +52,7 @@ Bấm đúp **`build-android.command`** ở thư mục gốc dự án, hoặc ch
 ```bash
 ./build-android.command
 ```
-- Script tự `git pull`, chạy test, build APK rồi lưu vào `dist/android/<phiên bản>-…/47-Librarian-<phiên bản>.apk`.
+- Script tự `git pull`, chạy test, build APK rồi lưu vào `dist/android/<phiên bản>-…/My-Librarian-<phiên bản>.apk`.
 - Điện thoại đang cắm cáp (đã bật Gỡ lỗi USB) thì script **cài luôn**. Cài đè giữ nguyên sách, vị trí đọc, dấu trang.
 - Lần build đầu mất 10–20 phút (tải Gradle, biên dịch Rust cho Android); các lần sau nhanh hơn nhiều.
 - Mã nguồn không đổi thì không build lại; nếu có điện thoại đang cắm thì cài lại bản APK gần nhất. Build lại bằng mọi giá:
@@ -64,14 +64,14 @@ Bấm đúp **`build-android.command`** ở thư mục gốc dự án, hoặc ch
   LIBRARIAN_ANDROID_DEVICE=R58M123ABC ./build-android.command
   ```
 
-**Cài bằng file APK (không cần cáp):** gửi file `47-Librarian-<phiên bản>.apk` sang điện thoại (Google Drive, Zalo, cáp chép file…), mở file trên điện thoại → cho phép "Cài ứng dụng không rõ nguồn gốc" cho app vừa dùng để mở → Cài đặt. Google Play Protect có thể hỏi → **Vẫn cài đặt**.
+**Cài bằng file APK (không cần cáp):** gửi file `My-Librarian-<phiên bản>.apk` sang điện thoại (Google Drive, Zalo, cáp chép file…), mở file trên điện thoại → cho phép "Cài ứng dụng không rõ nguồn gốc" cho app vừa dùng để mở → Cài đặt. Google Play Protect có thể hỏi → **Vẫn cài đặt**.
 
 **Về chữ ký:** APK là bản *debug*, ký bằng **khoá chung** `crates/ipad/android/debug.keystore` (script `scripts/android-signing.mjs` gắn khoá này vào dự án Gradle mỗi lần build). File khoá **không commit vào git** (là khoá riêng, đã có trong `.gitignore`). Lần đầu chưa có file này, script lấy khoá debug của máy đang build (`~/.android/debug.keystore`) làm khoá chung. Build trên nhiều máy (Mac, Windows) mà muốn cài đè được: tự chép file này sang đúng đường dẫn đó ở máy kia (USB, thư mục đồng bộ riêng…). Phần Rust vẫn biên dịch tối ưu nên tốc độ không kém bản release.
 
 APK mặc định chứa mã cho CPU ARM 64-bit và 32-bit (mọi điện thoại hiện nay). Chạy trên máy ảo Intel thì thêm `LIBRARIAN_ANDROID_TARGETS="aarch64 x86_64"`.
 
 ## Ghép với app Windows
-1. Windows: 47 Librarian → mục **iPad / iPhone** → **Bật kết nối**. Lần đầu Windows hỏi tường lửa → cho phép mạng riêng tư.
+1. Windows: My Librarian → mục **iPad / iPhone** → **Bật kết nối**. Lần đầu Windows hỏi tường lửa → cho phép mạng riêng tư.
 2. Windows: **Hiện mã QR mới** (mỗi máy một mã, mã dùng một lần, hết hạn sau 5 phút).
 3. Điện thoại: mở app → biểu tượng ⇅ **Đồng bộ** (góc dưới trái) → đặt **Tên máy này**, ví dụ "Điện thoại của Hưng". Tên này hiện trên Windows để phân biệt khi có nhiều máy. Sau đó **Quét mã QR** (cho phép camera) hoặc mở "Nhập tay" và gõ IP + mã 6 số.
 4. Windows: chuột phải sách hoặc bộ sách → **Gửi sang <tên điện thoại>** (hoặc "Gửi sang tất cả … thiết bị"). PDF và truyện tranh tự bị bỏ qua cho điện thoại; Windows báo số cuốn bị bỏ.
@@ -96,9 +96,9 @@ Hai máy phải cùng mạng Wi-Fi (không dùng mạng khách hay mạng cô l�
 | `INSTALL_FAILED_UPDATE_INCOMPATIBLE` / "chữ ký không khớp" | Bản đang cài được ký bằng khoá khác `crates/ipad/android/debug.keystore` (bản build trước khi có khoá chung). Gỡ app trên điện thoại rồi cài lại một lần; hoặc chép `~/.android/debug.keystore` của máy đã build bản đang cài vào `crates/ipad/android/debug.keystore` để cài đè không mất sách. |
 | `INSTALL_FAILED_NO_MATCHING_ABIS` | Máy ảo Intel: build lại với `LIBRARIAN_ANDROID_TARGETS="aarch64 x86_64"`. |
 | Build lỗi ở bước Gradle sau khi nâng cấp tauri-cli | Xoá `crates/ipad/gen/android` (thư mục sinh tự động, không commit) rồi chạy lại script. |
-| "Không thấy máy tính" | Windows đang chạy 47 Librarian và đã bật kết nối? Cùng Wi-Fi? Tường lửa cho phép? IP máy tính đổi → ghép lại. Tắt VPN / "DNS riêng tư" trên điện thoại nếu có. |
+| "Không thấy máy tính" | Windows đang chạy My Librarian và đã bật kết nối? Cùng Wi-Fi? Tường lửa cho phép? IP máy tính đổi → ghép lại. Tắt VPN / "DNS riêng tư" trên điện thoại nếu có. |
 | Gửi sách mà điện thoại không tải | Sách là PDF/truyện tranh (điện thoại không nhận). Hoặc đã gửi nhầm sang máy khác: xem hàng chờ từng máy trên Windows. |
-| Camera không bật khi quét QR | Cài đặt → Ứng dụng → 47 Librarian → Quyền → Máy ảnh. Hoặc nhập tay IP + mã. |
+| Camera không bật khi quét QR | Cài đặt → Ứng dụng → My Librarian → Quyền → Máy ảnh. Hoặc nhập tay IP + mã. |
 
 ## Kiểm tay trên điện thoại thật
 1. Gửi 1 EPUB → tải xong → mở đọc, lật trang, thoát, mở lại đúng chỗ.

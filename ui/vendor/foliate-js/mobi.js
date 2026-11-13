@@ -1061,7 +1061,7 @@ class KF8 {
         const results = {}
         const start = this.mobi.headers.kf8.resourceStart
         const end = this.mobi.pdb.numRecords
-        // [47 Librarian] đọc song song từng lô: với file đọc lười qua Range, mỗi lần đọc là một yêu cầu
+        // [My Librarian] đọc song song từng lô: với file đọc lười qua Range, mỗi lần đọc là một yêu cầu
         const BATCH = 32
         for (let b = start; b < end; b += BATCH) {
             const idx = Array.from({ length: Math.min(BATCH, end - b) }, (_, k) => b + k)

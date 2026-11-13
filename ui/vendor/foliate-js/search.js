@@ -113,7 +113,7 @@ export const searchMatcher = (textWalker, opts) => {
     return function* (doc, query) {
         const iter = textWalker(doc, function* (strs, makeRange) {
             for (const result of search(strs, query, {
-                // 47 Librarian: cho phép ép locale (vd. 'und' để "giot nuoc" khớp "giọt nước").
+                // My Librarian: cho phép ép locale (vd. 'und' để "giot nuoc" khớp "giọt nước").
                 locales: locales || doc.body.lang || doc.documentElement.lang || defaultLocale || 'en',
                 granularity: matchWholeWords ? 'word' : 'grapheme',
                 sensitivity: matchDiacritics && matchCase ? 'variant'

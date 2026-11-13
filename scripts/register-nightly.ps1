@@ -4,7 +4,7 @@
   Gỡ: powershell -File scripts\register-nightly.ps1 -Remove
 #>
 param([string]$At = '02:00', [switch]$Remove)
-$name = '47 Librarian - nightly CI'
+$name = 'My Librarian - nightly CI'
 if ($Remove) {
     Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
     Write-Host "Đã gỡ tác vụ '$name'"
@@ -16,5 +16,5 @@ $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
 $trigger = New-ScheduledTaskTrigger -Daily -At $At
 # StartWhenAvailable: máy tắt đúng giờ thì chạy bù khi bật lại.
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 2)
-Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings -Description 'CI tại máy cho 47 Librarian (scripts\ci.ps1)' -Force | Out-Null
+Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings -Description 'CI tại máy cho My Librarian (scripts\ci.ps1)' -Force | Out-Null
 Write-Host "Đã đăng ký '$name' lúc $At hằng ngày. Kết quả: target\ci\latest.log, bản build: dist\"

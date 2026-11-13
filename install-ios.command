@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Cài file .ipa 47 Librarian (build ở Mac khác bằng build-ipad.command --ipa) lên iPad/iPhone cắm cáp vào Mac này.
+# Cài file .ipa My Librarian (build ở Mac khác bằng build-ipad.command --ipa) lên iPad/iPhone cắm cáp vào Mac này.
 # Dành cho Mac không build được (vd. MacBook Pro 2016 – không chạy được Xcode mới). Không ký lại, không cần Xcode.
-#   ./install-ios.command                 lấy file 47-Librarian-*.ipa mới nhất (thư mục ghi trong .ipa-share,
+#   ./install-ios.command                 lấy file My-Librarian-*.ipa mới nhất (thư mục ghi trong .ipa-share,
 #                                         $LIBRARIAN_IPA_DIR, dist/ipad, dist/iphone, ~/Downloads)
 #   ./install-ios.command <file.ipa>      cài file chỉ định
 #   LIBRARIAN_IPAD_DEVICE=<UDID> ./install-ios.command    chọn máy khi cắm nhiều máy
-# Công cụ cài: go-ios (MIT, github.com/danielpaulus/go-ios) – lần đầu tự tải về ~/Library/Caches/47-librarian/go-ios (cần Node.js).
+# Công cụ cài: go-ios (MIT, github.com/danielpaulus/go-ios) – lần đầu tự tải về ~/Library/Caches/my-librarian/go-ios (cần Node.js).
 set -euo pipefail
 cd "$(dirname "$0")"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -16,7 +16,7 @@ ok() { printf '\n\033[1;32m%s\033[0m\n' "$*"; }
 fail() { printf '\n\033[1;31m%s\033[0m\n' "$*"; exit 1; }
 
 case "$(uname -m)" in x86_64) ARCH=amd64 ;; arm64) ARCH=arm64 ;; *) fail "Kiến trúc máy không hỗ trợ: $(uname -m)" ;; esac
-TOOL_DIR="$HOME/Library/Caches/47-librarian/go-ios/$GO_IOS_VERSION"
+TOOL_DIR="$HOME/Library/Caches/my-librarian/go-ios/$GO_IOS_VERSION"
 IOS="$TOOL_DIR/ios"
 if [ ! -x "$IOS" ]; then
   say "Tải công cụ cài go-ios $GO_IOS_VERSION (một lần, ~150 MB gói npm)"
@@ -44,9 +44,9 @@ if [ -z "$IPA" ]; then
     [ -d "$d" ] || continue
     while IFS= read -r f; do
       if [ -z "$IPA" ] || [ "$f" -nt "$IPA" ]; then IPA="$f"; fi
-    done < <(find "$d" -maxdepth 3 -name '47-Librarian-*.ipa' -type f 2>/dev/null)
+    done < <(find "$d" -maxdepth 3 -name 'My-Librarian-*.ipa' -type f 2>/dev/null)
   done
-  [ -n "$IPA" ] || fail "Không thấy file 47-Librarian-*.ipa. Chạy: ./install-ios.command <file.ipa>, hoặc ghi thư mục chứa .ipa vào file .ipa-share. Đã tìm trong: ${DIRS[*]}"
+  [ -n "$IPA" ] || fail "Không thấy file My-Librarian-*.ipa. Chạy: ./install-ios.command <file.ipa>, hoặc ghi thư mục chứa .ipa vào file .ipa-share. Đã tìm trong: ${DIRS[*]}"
 fi
 [ -f "$IPA" ] || fail "Không có file: $IPA"
 say "File: $IPA ($(du -h "$IPA" | cut -f1))"
@@ -91,5 +91,5 @@ if ! OUT=$("$IOS" install --path="$IPA" --udid="$UDID" 2>&1) || grep -qE '"level
   echo "$OUT"
   fail "Cài lỗi. Thử: mở khoá máy và cắm lại cáp; máy bật Chế độ nhà phát triển; còn dung lượng. Lỗi về chữ ký/profile: build lại .ipa trên Mac."
 fi
-ok "XONG – đã cài 47 Librarian."
+ok "XONG – đã cài My Librarian."
 echo "Lần đầu cài trên máy này: Cài đặt → Cài đặt chung → VPN & Quản lý thiết bị → tin cậy Apple ID của bạn."

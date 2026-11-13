@@ -449,7 +449,7 @@ export class Paginator extends HTMLElement {
     #touchState
     #touchScrolled
     #lastVisibleRange
-    // 47 Librarian – cuộn liền mạch (thuộc tính `continuous` + flow="scrolled", chữ ngang): giữ sẵn chương trước/sau
+    // My Librarian – cuộn liền mạch (thuộc tính `continuous` + flow="scrolled", chữ ngang): giữ sẵn chương trước/sau
     // trong #container (trên/dưới chương hiện tại) để cuộn trôi qua ranh giới chương như Apple Books.
     // #view luôn là chương chứa mép trên khung nhìn; các chương phụ nằm trong #extra.
     #extra = [] // [{ index, view }]

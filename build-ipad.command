@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build và cài app 47 Librarian lên iPad – bấm đúp file này trong Finder (máy Mac), hoặc chạy ./build-ipad.command
+# Build và cài app My Librarian lên iPad – bấm đúp file này trong Finder (máy Mac), hoặc chạy ./build-ipad.command
 #   - Lấy code mới nhất (git pull) nếu trên Mac không có thay đổi dở.
 #   - Mã nguồn không đổi kể từ lần cài trước: không build, chỉ báo. Riêng khi bản trên iPad sắp hết hạn 7 ngày
 #     (Apple ID miễn phí) thì tự build + cài lại, giữ nguyên số phiên bản.

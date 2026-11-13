@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "47 Librarian",
+  "productName": "My Librarian",
   "version": "0.1.0",
-  "identifier": "vn.hungtrieu.librarian47.ipad",
+  "identifier": "vn.hungtrieu.mylibrarian.ipad",
   "build": { "frontendDist": "../../target/ipad-ui" },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{ "title": "47 Librarian" }],
+    "windows": [{ "title": "My Librarian" }],
     "security": {
       "csp": "default-src 'self'; img-src 'self' data: blob: book: http://book.localhost; style-src 'self' 'unsafe-inline' blob:; font-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost book: http://book.localhost blob: data:; frame-src 'self' blob:; worker-src 'self' blob:; script-src 'self' 'wasm-unsafe-eval'"
     }

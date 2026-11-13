@@ -66,6 +66,6 @@ if ($code -ne 0 -or -not $setup) {
 Say ''
 Say "XONG – bản Windows $($s.version)" Green
 Say "Bộ cài: $($setup.FullName)" Green
-Say 'Cài: đóng 47 Librarian rồi chạy file -setup.exe ở trên (cài đè, giữ nguyên dữ liệu thư viện).' Green
+Say 'Cài: đóng My Librarian rồi chạy file -setup.exe ở trên (cài đè, giữ nguyên dữ liệu thư viện).' Green
 Show-Folder $out
 exit 0

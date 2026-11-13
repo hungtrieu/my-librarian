@@ -3,7 +3,7 @@ name = "librarian-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Lõi 47 Librarian: quét, metadata, chỉ mục, dedupe, phân loại, di chuyển/hoàn tác"
+description = "Lõi My Librarian: quét, metadata, chỉ mục, dedupe, phân loại, di chuyển/hoàn tác"
 
 [lib]
 name = "librarian_core"

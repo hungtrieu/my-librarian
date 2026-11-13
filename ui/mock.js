@@ -95,7 +95,7 @@ const trash = (ids) => { const t = ids.map(byId).filter(Boolean); t.forEach((b) 
   return { batch_id: batches.length, trashed: t.length, freed_bytes: t.reduce((s, b) => s + b.size, 0), failures: [], aborted: null }; };
 
 const handlers = {
-  overview: () => ({ config, library_ok: !!config.library_root, home: 'C:\\Users\\ban\\AppData\\Roaming\\47-librarian', scanning: false, categories: cats(), report: report(),
+  overview: () => ({ config, library_ok: !!config.library_root, home: 'C:\\Users\\ban\\AppData\\Roaming\\my-librarian', scanning: false, categories: cats(), report: report(),
     banner: `Từ lần quét ngầm gần nhất: ${suspects().length} nhóm nghi trùng, ${exact().length} bản trùng chắc chắn, ${present().filter((b) => b.in_inbox).length} sách mới chờ phân loại.`,
     facets: { total: present().length, bytes: 0, inbox: present().filter((b) => b.in_inbox).length, missing: 0, problems: present().filter((b) => b.error || b.drm).length, on_ipad: present().filter((b) => b.on_ipad).length,
       not_worth: present().filter((b) => b.not_worth).length,

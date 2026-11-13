@@ -9,7 +9,7 @@ use librarian_core::trash::{SystemTrasher, Trasher};
 #[ignore]
 fn system_trasher_goes_to_recycle_bin_and_restores() {
     let dir = tempfile::tempdir().unwrap();
-    let name = format!("47-librarian-test-{}.epub", std::process::id());
+    let name = format!("my-librarian-test-{}.epub", std::process::id());
     let p = dir.path().join(&name);
     std::fs::write(&p, b"test").unwrap();
     SystemTrasher.trash(&p).unwrap();

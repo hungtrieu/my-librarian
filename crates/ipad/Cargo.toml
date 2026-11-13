@@ -3,7 +3,7 @@ name = "librarian-ipad"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "47 Librarian cho iPad – ứng dụng Tauri 2 (iOS)"
+description = "My Librarian cho iPad – ứng dụng Tauri 2 (iOS)"
 
 [lib]
 name = "librarian_ipad_lib"

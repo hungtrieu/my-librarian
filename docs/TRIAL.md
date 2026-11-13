@@ -1,14 +1,14 @@
 # Thử trên kho thật (M7)
 
-Mục tiêu: chạy 47 Librarian trên ổ sách ~300 GB của bạn mà **không có rủi ro mất file**, đối chiếu kết quả
+Mục tiêu: chạy My Librarian trên ổ sách ~300 GB của bạn mà **không có rủi ro mất file**, đối chiếu kết quả
 rồi mới bật thao tác thật. App không bao giờ ghi gì vào ổ sách ngoài các lần xoá/di chuyển bạn bấm duyệt.
 
 ## 0. Cài đặt
 
 1. Chạy `scripts\ci.ps1` (bản đầy đủ) hoặc lấy bộ cài mới nhất trong `dist\<phiên bản>-<thời gian>-<commit>\`.
-2. Cài bằng `47 Librarian_<phiên bản>_x64-setup.exe` (NSIS, cài cho riêng tài khoản, không cần quyền admin)
+2. Cài bằng `My Librarian_<phiên bản>_x64-setup.exe` (NSIS, cài cho riêng tài khoản, không cần quyền admin)
    hoặc file `.msi`. Bộ cài kèm `librarian.exe` (CLI) và `librarian-bg.exe` (quét ngầm) trong thư mục cài.
-3. Dữ liệu app nằm ở `%APPDATA%\47-librarian` (DB, ảnh bìa, cache, log, `backups\`).
+3. Dữ liệu app nằm ở `%APPDATA%\my-librarian` (DB, ảnh bìa, cache, log, `backups\`).
    Gỡ cài đặt bằng NSIS và tick “Delete the application data” sẽ xoá thư mục này; sách không bị đụng tới.
 
 ## 1. Chế độ chỉ đọc (bắt buộc ở lần đầu)
@@ -40,7 +40,7 @@ Ghi lại số liệu thật (thời gian quét lần đầu/quét lại, số n
 
 ## 4. Khi có sự cố
 
-- Log: `%APPDATA%\47-librarian\logs\`.
-- DB được sao lưu mỗi ngày (giữ 7 bản) ở `%APPDATA%\47-librarian\backups\`. Nếu `library.db` hỏng, app tự cất
+- Log: `%APPDATA%\my-librarian\logs\`.
+- DB được sao lưu mỗi ngày (giữ 7 bản) ở `%APPDATA%\my-librarian\backups\`. Nếu `library.db` hỏng, app tự cất
   file hỏng thành `library.db.corrupt-<thời gian>` và khôi phục từ bản sao lưu mới nhất (có thông báo khi mở app).
 - Nhật ký mọi lần xoá/di chuyển: màn “Hoạt động” hoặc `librarian activity`.

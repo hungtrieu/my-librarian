@@ -1,4 +1,4 @@
-# Backlog – 47 Librarian cho iPad (bản đọc sách)
+# Backlog – My Librarian cho iPad (bản đọc sách)
 
 Trạng thái: **đang làm** (UI iPad `ui/ipad/` đã có trên backend giả: lưới, ô bộ, Đang đọc, tìm kiếm, xoá, dung lượng; lệnh Rust `crates/ipad` đã có (lib_*, reader_info, book://), build được cho aarch64-apple-ios; còn `tauri ios init` + Info.plist chia sẻ file trên Mac) (2026-11-08) – đã có `ipad_lib.rs` (DB iPad: thư viện, nhóm bộ, tìm không dấu, vị trí đọc sống sót khi xoá, dung lượng; phần lõi I1-04/I1-05/I1-07/I1-08, chưa có UI/app) – xong I1-01 (tách feature `desktop`/`reader`, `cargo check --target aarch64-apple-ios` qua) và phần lõi I3: `sync_proto.rs`, `sync.rs` (máy chủ HTTP v1, hàng chờ, ghép token, hash nền, Range; có `cargo test`). UI I3 xong: màn **iPad** (bật/tắt máy chủ, QR + mã 6 số, thiết bị đã ghép, hàng chờ + cảnh báo dung lượng) và menu chuột phải "Gửi sang iPad" (ẩn với CBR/DJVU). I3-06 xong (lọc + nhãn "Có trên iPad"). Còn lại của I3: I3-07/08 (P1). File này độc lập với [BACKLOG.md](BACKLOG.md); khi bắt đầu làm sẽ thêm một dòng trỏ sang từ backlog chính.
 
@@ -37,7 +37,7 @@ Ký hiệu giống backlog chính: cỡ **S** ≤ 1 ngày · **M** 2–3 ngày �
 | DI4 | **Đồng bộ qua Wi-Fi trong nhà, không cần iTunes / Finder / app nào của Apple, không qua đám mây.** App Windows bật một máy chủ nhỏ trong mạng nội bộ; app iPad kết nối tới và tải sách về. Chi tiết ở mục 3. |
 | DI5 | **Ghép nối một lần bằng mã QR**: máy tính hiện mã QR, iPad quét bằng camera là xong; những lần sau iPad tự tìm thấy máy tính. Có mã 6 số để gõ tay nếu camera không quét được. |
 | DI6 | **Chọn sách gửi từ máy tính**: trên app Windows, chuột phải một cuốn / một bộ / nhiều cuốn → "Gửi sang iPad" → vào hàng chờ. Mở app iPad, bấm "Đồng bộ" là tải hết hàng chờ. (P1: duyệt và tìm cả thư viện máy tính ngay trên iPad, bấm cuốn nào tải cuốn đó.) |
-| DI7 | **Đọc được các file sẵn có trên iPad**, không chỉ file gửi từ máy tính: mở file ở bất kỳ đâu trong app Tệp (Trên iPad, iCloud Drive, USB…) **tại chỗ, không cần chép** (app nhớ file và vị trí đọc), hoặc chép vào app; "Mở bằng 47 Librarian" từ Safari/Mail/AirDrop. |
+| DI7 | **Đọc được các file sẵn có trên iPad**, không chỉ file gửi từ máy tính: mở file ở bất kỳ đâu trong app Tệp (Trên iPad, iCloud Drive, USB…) **tại chỗ, không cần chép** (app nhớ file và vị trí đọc), hoặc chép vào app; "Mở bằng My Librarian" từ Safari/Mail/AirDrop. |
 | DI8 | **Không hỗ trợ CBR trên iPad.** iPad không cần thư viện RAR; app Windows ẩn "Gửi sang iPad" với CBR; mở CBR trên iPad thì báo "Định dạng chưa hỗ trợ". |
 | DI9 | **Không hỗ trợ DJVU trên iPad.** Xử lý giống CBR. |
 
@@ -55,7 +55,7 @@ Ký hiệu giống backlog chính: cỡ **S** ≤ 1 ngày · **M** 2–3 ngày �
 ```
  Máy Windows (app hiện có)                         iPad (app mới)
 ┌───────────────────────────────┐   Wi-Fi nhà   ┌──────────────────────────────┐
-│ 47-librarian.exe              │  HTTP + token │ 47 Librarian Reader          │
+│ my-librarian.exe              │  HTTP + token │ My Librarian Reader          │
 │  ├─ thư viện, phân loại…      │◄─────────────►│  ├─ thư viện trên iPad       │
 │  └─ [MỚI] máy chủ đồng bộ     │               │  ├─ trình đọc (dùng lại)     │
 │      cổng 47470, chỉ đọc       │               │  └─ đồng bộ: ghép QR, tải,  │
@@ -136,7 +136,7 @@ scripts/ipad-*     [MỚI] chuẩn bị thư mục giao diện; ipad-install.sh 
 ### 3.4 Tìm thấy máy tính
 
 - QR chứa: các địa chỉ IP nội bộ của máy + cổng 47470 + mã ghép + `library_id`. iPad nhớ địa chỉ.
-- P1: **Bonjour** (`_47librarian._tcp`) – máy tính quảng bá bằng mDNS, iPad tìm bằng `NWBrowser` (plugin Swift nhỏ; iOS cần khai báo `NSBonjourServices` + `NSLocalNetworkUsageDescription`, sẽ hỏi quyền "Mạng cục bộ" một lần). Nhờ vậy máy đổi IP vẫn tìm được, không cần quét QR lại.
+- P1: **Bonjour** (`_mylibrarian._tcp`) – máy tính quảng bá bằng mDNS, iPad tìm bằng `NWBrowser` (plugin Swift nhỏ; iOS cần khai báo `NSBonjourServices` + `NSLocalNetworkUsageDescription`, sẽ hỏi quyền "Mạng cục bộ" một lần). Nhờ vậy máy đổi IP vẫn tìm được, không cần quét QR lại.
 
 ---
 
@@ -202,8 +202,8 @@ Thứ tự: I0 trước vì rủi ro lớn nhất là **build/ký iOS bằng Tau
 | I3-04 | Tính SHA-256 đầy đủ cho sách trong hàng chờ (chạy nền; lưu vào DB, dùng luôn cho dedupe) | Hash đúng, không chặn giao diện | P0 | S | ✅ |
 | I3-05 | ~~CBR → CBZ khi gửi~~ – bỏ (DI8). "Gửi sang iPad" ẩn với CBR/DJVU; gửi cả bộ có lẫn CBR/DJVU thì bỏ qua các file đó và báo số lượng | — | — | — | ⛔ Bỏ |
 | I3-06 | Đánh dấu trên lưới thư viện Windows: "Có trên iPad" (từ `ack` / `status`) | Lọc được "Có trên iPad" | P1 | S | ✅ |
-| I3-07 | Tường lửa / mạng Công cộng. Bộ cài chạy currentUser (không Admin) nên **không** thêm luật lúc cài; thay vào đó màn **iPad** kiểm tra (`ipad_net_check`): card có IP nội bộ đang là mạng Công cộng → cảnh báo "Bị chặn" + nút **Sửa** (một lần UAC, `ipad_net_fix`): chuyển sang Riêng tư + luật `47 Librarian sync (TCP 47470)` (TCP 47470, LocalSubnet, hồ sơ Riêng tư). Gỡ cài thì xoá luật (UAC nếu luật có). Lý do: Wi-Fi Công cộng chặn SYN từ điện thoại dù app có luật Cho phép (gặp thật với Android, 2026-11-12) | Wi-Fi Công cộng → thấy cảnh báo; bấm Sửa → điện thoại kết nối được | P1 | S | ✅ |
-| I3-08 | Quảng bá Bonjour/mDNS `_47librarian._tcp` khi máy chủ đang bật | iPad thấy máy tính mà không cần IP | P1 | S | ⬜ |
+| I3-07 | Tường lửa / mạng Công cộng. Bộ cài chạy currentUser (không Admin) nên **không** thêm luật lúc cài; thay vào đó màn **iPad** kiểm tra (`ipad_net_check`): card có IP nội bộ đang là mạng Công cộng → cảnh báo "Bị chặn" + nút **Sửa** (một lần UAC, `ipad_net_fix`): chuyển sang Riêng tư + luật `My Librarian sync (TCP 47470)` (TCP 47470, LocalSubnet, hồ sơ Riêng tư). Gỡ cài thì xoá luật (UAC nếu luật có). Lý do: Wi-Fi Công cộng chặn SYN từ điện thoại dù app có luật Cho phép (gặp thật với Android, 2026-11-12) | Wi-Fi Công cộng → thấy cảnh báo; bấm Sửa → điện thoại kết nối được | P1 | S | ✅ |
+| I3-08 | Quảng bá Bonjour/mDNS `_mylibrarian._tcp` khi máy chủ đang bật | iPad thấy máy tính mà không cần IP | P1 | S | ⬜ |
 | I3-09 | Báo rõ khi ổ sách chưa cắm: iPad thấy "Ổ sách trên máy tính chưa kết nối" thay vì lỗi tải | — | P0 | S | ✅ |
 
 ### I4 – Phía iPad: đồng bộ
@@ -227,7 +227,7 @@ Thứ tự: I0 trước vì rủi ro lớn nhất là **build/ký iOS bằng Tau
 ### I6 – Cài đặt lên iPad (Apple ID miễn phí, DI11)
 | ID | Story | Tiêu chí nghiệm thu | Ưu tiên | Cỡ | Trạng thái |
 |---|---|---|---|---|---|
-| I6-01 | Cấu hình ký Personal Team (Bundle ID cố định, vd. `vn.47.librarian.reader`, không đổi giữa các lần cài để giữ dữ liệu); không đưa thông tin tài khoản vào repo | Cài đè không mất sách | P0 | S | ✅ (ký + cài được lên iPad Air 5, 2026-11-09; chưa thử cài đè giữ dữ liệu) |
+| I6-01 | Cấu hình ký Personal Team (Bundle ID cố định, vd. `vn.mylibrarian.reader`, không đổi giữa các lần cài để giữ dữ liệu); không đưa thông tin tài khoản vào repo | Cài đè không mất sách | P0 | S | ✅ (ký + cài được lên iPad Air 5, 2026-11-09; chưa thử cài đè giữ dữ liệu) |
 | I6-02 | `scripts/ipad-install.sh` trên Mac: build release → ký → cài lên iPad **qua Wi-Fi** (`xcrun devicectl`); dùng cho cả cài bản mới lẫn ký lại mỗi 7 ngày | Một lệnh, iPad không cần cắm cáp | P0 | M | 🟡 (đã cài được qua cáp; tự đăng ký iPad, cài .app thay .ipa; chưa thử qua Wi-Fi) |
 | I6-03 | App iPad hiện ngày chữ ký hết hạn ở màn Cài đặt và nhắc trước 1 ngày khi mở app | — | P1 | S | ⬜ |
 | I6-04 | Hướng dẫn lần đầu (`docs/IPAD.md`): ghép iPad với Mac, bật Developer Mode, tin cậy nhà phát triển trên iPad, ghép QR với app Windows; tuỳ chọn AltStore/SideStore để tự ký lại | Làm theo được từ đầu đến cuối | P1 | S | 🟡 (viết xong, chưa chạy trên Mac/iPad thật) |

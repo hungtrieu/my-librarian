@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "47 Librarian",
+  "productName": "My Librarian",
   "version": "0.1.0",
-  "identifier": "vn.hungtrieu.librarian47",
+  "identifier": "vn.hungtrieu.mylibrarian",
   "build": {
     "frontendDist": "../../ui"
   },
@@ -12,7 +12,7 @@
       {
         "label": "main",
         "create": false,
-        "title": "47 Librarian",
+        "title": "My Librarian",
         "width": 1280,
         "height": 820,
         "minWidth": 760,
@@ -39,7 +39,7 @@
     "copyright": "© 2026 Hung Trieu",
     "category": "Productivity",
     "shortDescription": "Quản lý và đọc kho ebook cá nhân",
-    "longDescription": "47 Librarian: quét, tìm, dọn trùng, phân loại và đọc kho ebook (EPUB, MOBI/AZW3, FB2, CBZ/CBR, PDF) trên Windows.",
+    "longDescription": "My Librarian: quét, tìm, dọn trùng, phân loại và đọc kho ebook (EPUB, MOBI/AZW3, FB2, CBZ/CBR, PDF) trên Windows.",
     "fileAssociations": [
       {
         "ext": [
@@ -53,8 +53,8 @@
           "pdf",
           "djvu"
         ],
-        "name": "47 Librarian ebook",
-        "description": "Ebook (47 Librarian)",
+        "name": "My Librarian ebook",
+        "description": "Ebook (My Librarian)",
         "role": "Viewer"
       }
     ],

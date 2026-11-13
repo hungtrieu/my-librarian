@@ -1,11 +1,11 @@
-# 47 Librarian trên iPad – cài và dùng
+# My Librarian trên iPad – cài và dùng
 
 App iPad đọc sách đã đồng bộ từ app Windows qua Wi-Fi nhà. **Không dùng App Store/TestFlight**: bạn tự build trên Mac và cài từ Xcode bằng Apple ID miễn phí.
 
 > **Trạng thái (2026-11-09):** đã build, ký và cài được lên iPad Air 5 (iPadOS 27.0.1, Xcode 27.2). Chưa thử đồng bộ với Windows trên máy thật.
 
 ## Giới hạn của Apple ID miễn phí
-- App **hết hạn sau 7 ngày** → mở không lên. Cài đè lại (chạy lại script) là xong, **dữ liệu trong app giữ nguyên** miễn Bundle ID không đổi (`vn.hungtrieu.librarian47.ipad`, đừng sửa).
+- App **hết hạn sau 7 ngày** → mở không lên. Cài đè lại (chạy lại script) là xong, **dữ liệu trong app giữ nguyên** miễn Bundle ID không đổi (`vn.hungtrieu.mylibrarian.ipad`, đừng sửa).
 - Tối đa 3 app tự ký cùng lúc trên một thiết bị; 10 App ID mới mỗi 7 ngày.
 - Muốn khỏi ký lại: AltStore/SideStore (tự ký lại qua Wi-Fi) – tuỳ chọn, ngoài phạm vi repo này.
 
@@ -38,7 +38,7 @@ Bấm đúp **`build-ipad.command`** ở thư mục gốc dự án (hoặc `./bu
 
 Có nhiều iPad cắm/ghép với Mac thì đặt thêm `LIBRARIAN_IPAD_DEVICE=<tên hoặc UDID>` trước khi chạy (UDID ở cột Identifier của `xcrun devicectl list devices`). Nhập giá trị thật, đừng gõ nguyên `<…>` – zsh sẽ báo `parse error`.
 
-`scripts/ipad-install.sh` (build-ipad.command gọi): tìm iPad → ghép giao diện → `cargo tauri ios init` (lần đầu) → thêm khoá Info.plist (thư mục Tệp, camera, mạng nội bộ) → **lần đầu: đăng ký iPad vào Personal Team** (xcodebuild với `-allowProvisioningDeviceRegistration`; nếu không, Xcode báo *"Your team has no devices"*) → `cargo tauri ios build` → cài thẳng `47 Librarian.app` đã ký trong DerivedData bằng `xcrun devicectl device install app`. Script không dùng `.ipa`: bước archive/export của Tauri hay lỗi `errSecInternalComponent` dù `.app` đã ký xong.
+`scripts/ipad-install.sh` (build-ipad.command gọi): tìm iPad → ghép giao diện → `cargo tauri ios init` (lần đầu) → thêm khoá Info.plist (thư mục Tệp, camera, mạng nội bộ) → **lần đầu: đăng ký iPad vào Personal Team** (xcodebuild với `-allowProvisioningDeviceRegistration`; nếu không, Xcode báo *"Your team has no devices"*) → `cargo tauri ios build` → cài thẳng `My Librarian.app` đã ký trong DerivedData bằng `xcrun devicectl device install app`. Script không dùng `.ipa`: bước archive/export của Tauri hay lỗi `errSecInternalComponent` dù `.app` đã ký xong.
 
 **Đừng bấm Run trong Xcode**: bước "Build Rust Code" gọi `cargo tauri ios xcode-script`, cần tauri CLI chạy song song (và Xcode mở từ Dock không thấy `~/.cargo/bin` → `cargo: command not found`). Luôn build bằng script. Cũng đừng để Xcode build cùng lúc với script (lỗi `database is locked`).
 
@@ -55,22 +55,22 @@ Dùng khi Mac build ở chỗ khác (vd. Mac mini công ty, remote vào), còn i
 ```bash
 ./build-ipad.command --ipa
 ```
-(`./build-iphone.command --ipa` cũng được – cùng một app.) Không cần iPad cắm/ghép. Script build, ký, lưu `47-Librarian-<phiên bản>.ipa` vào `dist/ipad/<phiên bản>-…/` và in **hạn ký** (ngày app ngừng mở được). Một file `.ipa` cài được cho mọi máy đã đăng ký (cả iPad lẫn iPhone).
-- Muốn file tự về nhà: ghi đường dẫn một thư mục đồng bộ (Google Drive, OneDrive, iCloud Drive…) vào file `.ipa-share` ở thư mục gốc dự án trên Mac build, ví dụ `~/Library/CloudStorage/GoogleDrive-…/My Drive/47-ipa`. Script tự chép `.ipa` sang đó. (Hoặc tải về bằng scp / công cụ remote.)
+(`./build-iphone.command --ipa` cũng được – cùng một app.) Không cần iPad cắm/ghép. Script build, ký, lưu `My-Librarian-<phiên bản>.ipa` vào `dist/ipad/<phiên bản>-…/` và in **hạn ký** (ngày app ngừng mở được). Một file `.ipa` cài được cho mọi máy đã đăng ký (cả iPad lẫn iPhone).
+- Muốn file tự về nhà: ghi đường dẫn một thư mục đồng bộ (Google Drive, OneDrive, iCloud Drive…) vào file `.ipa-share` ở thư mục gốc dự án trên Mac build, ví dụ `~/Library/CloudStorage/GoogleDrive-…/My Drive/librarian-ipa`. Script tự chép `.ipa` sang đó. (Hoặc tải về bằng scp / công cụ remote.)
 - Code không đổi thì không build lại, chỉ in (và chép) file `.ipa` của bản gần nhất. Build lại bằng mọi giá: `./build-ipad.command --ipa --force`.
 
 **Ở nhà – Windows 11:**
 1. Một lần: cài app **Apple Devices** từ Microsoft Store (hoặc iTunes) để có driver; cài Node.js (để tải công cụ cài go-ios lần đầu).
 2. Cắm iPad/iPhone, mở khoá, bấm **Tin cậy**.
-3. Bấm đúp **`install-ios.cmd`** ở thư mục gốc dự án – tự lấy file `47-Librarian-*.ipa` mới nhất trong thư mục ghi ở `.ipa-share` (trên máy Windows, ví dụ `G:\My Drive\47-ipa`), `dist\ipad`, `dist\iphone` hoặc **Downloads**. Hoặc kéo-thả file `.ipa` lên `install-ios.cmd`. Nhiều máy cắm cùng lúc: `install-ios.cmd -Device <UDID>`.
+3. Bấm đúp **`install-ios.cmd`** ở thư mục gốc dự án – tự lấy file `My-Librarian-*.ipa` mới nhất trong thư mục ghi ở `.ipa-share` (trên máy Windows, ví dụ `G:\My Drive\librarian-ipa`), `dist\ipad`, `dist\iphone` hoặc **Downloads**. Hoặc kéo-thả file `.ipa` lên `install-ios.cmd`. Nhiều máy cắm cùng lúc: `install-ios.cmd -Device <UDID>`.
 
 **Ở nhà – Mac cũ** (vd. MacBook Pro 2016, không chạy được Xcode mới): cần Node.js, không cần Xcode. Cắm máy, rồi:
 ```bash
 ./install-ios.command            # lấy .ipa mới nhất (như trên, thêm ~/Downloads)
-./install-ios.command ~/Downloads/47-Librarian-0.1.10.ipa
+./install-ios.command ~/Downloads/My-Librarian-0.1.10.ipa
 ```
 
-Script cài kiểm trước: bản `.ipa` còn hạn ký không, máy đang cắm có trong chữ ký không. Công cụ cài là [go-ios](https://github.com/danielpaulus/go-ios) (MIT), tự tải một lần vào `%LOCALAPPDATA%\47-librarian\go-ios` (Windows) / `~/Library/Caches/47-librarian/go-ios` (Mac).
+Script cài kiểm trước: bản `.ipa` còn hạn ký không, máy đang cắm có trong chữ ký không. Công cụ cài là [go-ios](https://github.com/danielpaulus/go-ios) (MIT), tự tải một lần vào `%LOCALAPPDATA%\my-librarian\go-ios` (Windows) / `~/Library/Caches/my-librarian/go-ios` (Mac).
 
 **Hạn 7 ngày tính từ lúc Mac build tạo provisioning profile**, không phải lúc cài. Xcode dùng lại profile cũ đến khi hết hạn, nên bản build hôm nay có thể chỉ còn vài ngày – xem dòng "hạn ký" script in ra (cả lúc build lẫn lúc cài). Hết hạn thì build lại `--ipa` trên Mac (Xcode tự cấp profile mới) rồi cài lại.
 
@@ -82,12 +82,12 @@ Trong trình đọc bấm biểu tượng dấu trang (🔖) để đánh dấu 
 ## Sách không đáng đọc (Windows, iPad, iPhone, Android)
 - **Windows:** chuột phải sách hoặc bộ → **Đánh dấu không đáng đọc**. Sách biến khỏi thư viện (cả tìm kiếm, Đang đọc) và nằm ở mục **Không đáng đọc** trên sidebar; chuột phải ở đó → **Đáng đọc – đưa lại vào thư viện**. Toast có nút Hoàn tác.
 - **iPad / iPhone / Android:** nhấn giữ sách hoặc bộ → **Không đáng đọc**. Thư viện có thêm tab **Không đáng đọc (n)**; nhấn giữ trong tab đó → **Đáng đọc** để đưa lại.
-- **Đồng bộ tự động** khi thiết bị cùng Wi-Fi với máy Windows đang mở 47 Librarian: lúc mở app, lúc app quay lại màn hình (tối đa 30 giây một lần), ngay sau khi đánh dấu trên thiết bị, và mỗi lần tải sách. Máy tính không bật thì để lần sau. Hai bên đổi khác nhau thì **lần đổi sau cùng thắng**.
+- **Đồng bộ tự động** khi thiết bị cùng Wi-Fi với máy Windows đang mở My Librarian: lúc mở app, lúc app quay lại màn hình (tối đa 30 giây một lần), ngay sau khi đánh dấu trên thiết bị, và mỗi lần tải sách. Máy tính không bật thì để lần sau. Hai bên đổi khác nhau thì **lần đổi sau cùng thắng**.
 - Cờ giữ lại khi xoá sách khỏi thiết bị rồi gửi lại. Chỉ áp dụng cho sách đang có trên thiết bị.
 - Cần cập nhật **cả** app Windows và app thiết bị; bản Windows cũ thì thiết bị chỉ đánh dấu được cục bộ.
 
 ## Ghép với app Windows
-1. Windows: 47 Librarian → mục **iPad / iPhone** → **Bật kết nối**. Lần đầu Windows hỏi tường lửa → cho phép mạng riêng tư. Cổng mặc định 47470. Nếu Wi-Fi nhà đang là mạng **Công cộng**, màn này hiện cảnh báo **Bị chặn** – bấm **Sửa** (Windows hỏi quyền quản trị) để chuyển sang Riêng tư và mở cổng; không sửa thì thiết bị báo "connection timed out".
+1. Windows: My Librarian → mục **iPad / iPhone** → **Bật kết nối**. Lần đầu Windows hỏi tường lửa → cho phép mạng riêng tư. Cổng mặc định 47470. Nếu Wi-Fi nhà đang là mạng **Công cộng**, màn này hiện cảnh báo **Bị chặn** – bấm **Sửa** (Windows hỏi quyền quản trị) để chuyển sang Riêng tư và mở cổng; không sửa thì thiết bị báo "connection timed out".
 2. Windows: **Hiện mã QR mới**.
 3. iPad: biểu tượng ⇅ → đặt **Tên máy này** (vd. "iPad của Na" – tên hiện trên Windows để phân biệt khi có nhiều máy) → **Quét mã QR** (cho phép camera) hoặc nhập tay IP + mã 6 số. iOS hỏi quyền **Mạng cục bộ** → Cho phép.
 4. Windows: chuột phải sách / bộ → **Gửi sang <tên iPad>** (hoặc "Gửi sang tất cả … thiết bị"). Trên iPad mở ⇅ → Tải. Mặc định app tự tải khi mở nếu thấy máy tính.
@@ -97,14 +97,14 @@ Mã QR dùng một lần, hết hạn sau 5 phút – mỗi máy ghép bằng m�
 **Nhiều iPad / iPhone dùng chung thư viện:** mỗi máy có **hàng chờ riêng**. Mục iPad / iPhone trên Windows liệt kê từng máy: hàng chờ của máy đó (bỏ từng cuốn hoặc cả hàng chờ), dung lượng trống, và **Xem sách đã có trên máy**. Chuột phải một cuốn có trên thiết bị → **Có trên thiết bị nào?**. Đổi tên máy bằng nút **Đổi tên**; tên trùng thì Windows tự thêm số ("iPad 2"). Gỡ một máy thì hàng chờ của nó bị xoá, sách đã tải trên máy vẫn còn.
 
 ## Đọc sách có sẵn trên iPad
-Thư mục **47 Librarian → Books** hiện trong app Tệp. (Mở file tại chỗ từ Tệp: chưa làm, I1-06.)
+Thư mục **My Librarian → Books** hiện trong app Tệp. (Mở file tại chỗ từ Tệp: chưa làm, I1-06.)
 
 ## Nếu gặp lỗi
 | Triệu chứng | Thử |
 |---|---|
-| "Không thấy máy tính" | Windows đang chạy 47 Librarian và đã bật kết nối (mục iPad / iPhone)? Cùng Wi-Fi? Tường lửa Windows cho phép app? IP đổi → ghép lại. |
+| "Không thấy máy tính" | Windows đang chạy My Librarian và đã bật kết nối (mục iPad / iPhone)? Cùng Wi-Fi? Tường lửa Windows cho phép app? IP đổi → ghép lại. |
 | iPad không có trong `devicectl list devices` | Mở khoá iPad, cắm cáp (cáp truyền dữ liệu) thử một lần. |
-| `Your team has no devices` / `No profiles for 'vn.hungtrieu.librarian47.ipad'` | iPad chưa đăng ký vào team. Script tự làm lần đầu; nếu vẫn lỗi: cắm cáp, mở khoá iPad, kiểm `LIBRARIAN_IPAD_TEAM`, chạy lại. |
+| `Your team has no devices` / `No profiles for 'vn.hungtrieu.mylibrarian.ipad'` | iPad chưa đăng ký vào team. Script tự làm lần đầu; nếu vẫn lỗi: cắm cáp, mở khoá iPad, kiểm `LIBRARIAN_IPAD_TEAM`, chạy lại. |
 | `errSecInternalComponent` / ".app chưa được ký hợp lệ" | Chạy script trong Terminal trên Mac (không qua SSH/công cụ khác). Vẫn lỗi: chạy `security set-key-partition-list …` ở mục Chuẩn bị (bước 2), hoặc khi macOS hỏi "codesign muốn dùng khoá" nhập mật khẩu mở máy và bấm **Always Allow**. Không nhớ mật khẩu mở máy: chạy `./scripts/ipad-keychain-setup.sh` một lần – tạo keychain `ipad-signing` với mật khẩu mới, hướng dẫn tạo chứng chỉ Apple Development mới trong Xcode (thu hồi cái cũ), cho codesign dùng khoá không cần hỏi; `ipad-install.sh` tự mở khoá keychain này mỗi lần build. |
 | `cargo: command not found` khi build trong Xcode | Đừng build trong Xcode, dùng script. |
 | `database is locked` | Đang có build khác (Xcode hoặc lần chạy trước). Dừng nó rồi chạy lại. |
@@ -112,7 +112,7 @@ Thư mục **47 Librarian → Books** hiện trong app Tệp. (Mở file tại c
 | `install-ios`: "Máy này chưa có trong chữ ký" | Máy chưa đăng ký vào team: cắm máy vào Mac build, chạy `build-ipad.command` (không `--ipa`) một lần, rồi build lại `.ipa`. |
 | `install-ios`: "đã hết hạn ký" | Build lại trên Mac: `./build-ipad.command --ipa --force`. |
 | Mở app báo không tin cậy / văng ngay | Hết 7 ngày → chạy lại script; hoặc chưa tin cậy nhà phát triển (xem trên). |
-| Camera không bật | Cài đặt → 47 Librarian → Camera. Hoặc nhập tay IP + mã. |
+| Camera không bật | Cài đặt → My Librarian → Camera. Hoặc nhập tay IP + mã. |
 
 ## Kiểm tay trên iPad thật (I6-05)
 1. Gửi 1 EPUB nhỏ → tải xong → mở đọc, lật trang, thoát, mở lại đúng chỗ.

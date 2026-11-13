@@ -1,4 +1,4 @@
-# BRD – 47 Librarian (ứng dụng quản lý kho ebook trên Windows)
+# BRD – My Librarian (ứng dụng quản lý kho ebook trên Windows)
 
 Trạng thái: **DRAFT**. Chưa có dòng code nào. Các quyết định mới (Tauri, một thư mục `books`, phân loại theo thư mục có sẵn, quét ngầm chỉ lập danh sách, trình đọc kiểu Apple Books) nằm ở [BACKLOG.md](BACKLOG.md) mục 1 và **thay thế** các phần mâu thuẫn trong file này (mục 3.8, 5, 6, 8).
 

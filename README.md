@@ -1,4 +1,4 @@
-# 47 Librarian
+# My Librarian
 
 Ứng dụng Windows quản lý kho ebook: quét, tìm nhanh không dấu, phát hiện trùng lặp an toàn, phân loại vào các thư mục thể loại có sẵn, quét ngầm hằng ngày. Yêu cầu: [docs/BRD.md](docs/BRD.md) · Backlog & tiến độ: [docs/BACKLOG.md](docs/BACKLOG.md).
 
@@ -9,7 +9,7 @@ Hiện có **lõi Rust (`crates/core`), CLI (`crates/scanner-cli`) và app Tauri
 ```
 crates/core/         thư viện lõi: scan, metadata, SQLite+FTS5, băm, dedupe, phân loại, di chuyển/hoàn tác, thùng rác
 crates/scanner-cli/  librarian.exe (CLI) và librarian-bg.exe (tác vụ ngầm, không cửa sổ)
-crates/app/          47-librarian.exe – app Tauri 2 (IPC + giao thức cover:// cho ảnh bìa)
+crates/app/          my-librarian.exe – app Tauri 2 (IPC + giao thức cover:// cho ảnh bìa)
 crates/ipad/         app iPad + iPhone (Tauri 2, iOS) và điện thoại Android – đọc sách đồng bộ từ app Windows qua Wi-Fi
 ui/                  giao diện HTML/CSS/JS thuần (không cần bước build); mock.js = backend giả để xem trên trình duyệt
 ui/ipad/             giao diện thư viện iPad (dùng chung trình đọc trong ui/)
@@ -19,7 +19,7 @@ docs/                BRD, backlog, BUILD.md (build lại Windows + iPad), IPAD.m
 
 **Build bản cài mới sau khi sửa code:** Windows – bấm đúp `build-windows.cmd`; iPad – bấm đúp `build-ipad.command`, iPhone – `build-iphone.command`, Android – `build-android.command` trên Mac. Chỉ build khi code đổi, tự tăng phiên bản và chạy test. Chi tiết: [docs/BUILD.md](docs/BUILD.md).
 
-Dữ liệu app nằm ở `%APPDATA%\47-librarian\` (`library.db`, `config.json`, `logs\`, `backups\`); đổi bằng `--home` hoặc biến `LIBRARIAN_HOME`. Ngoài các file sách bạn duyệt di chuyển/xoá, app không ghi gì vào ổ sách.
+Dữ liệu app nằm ở `%APPDATA%\my-librarian\` (`library.db`, `config.json`, `logs\`, `backups\`); đổi bằng `--home` hoặc biến `LIBRARIAN_HOME`. Ngoài các file sách bạn duyệt di chuyển/xoá, app không ghi gì vào ổ sách.
 
 ## Build
 
@@ -120,7 +120,7 @@ Thêm `--read-only` vào bất kỳ lệnh nào để chắc chắn không file 
 `librarian-bg.exe [--home <dir>]` chạy quét + băm + tìm trùng + đề xuất phân loại, chỉ ghi DB/log, rồi thoát (mã 0 = xong, 2 = app đang quét, 1 = lỗi). Việc đăng ký lịch trong Task Scheduler (E8-02) chưa làm. Tạm thời có thể đăng ký tay:
 
 ```bash
-schtasks /Create /SC DAILY /ST 03:00 /TN "47 Librarian scan" /TR "\"C:\path\librarian-bg.exe\""
+schtasks /Create /SC DAILY /ST 03:00 /TN "My Librarian scan" /TR "\"C:\path\librarian-bg.exe\""
 ```
 
 ## Giấy phép

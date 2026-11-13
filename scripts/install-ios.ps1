@@ -1,15 +1,15 @@
 ﻿<#
 .SYNOPSIS
-  Cài file .ipa 47 Librarian (build ở Mac bằng build-ipad.command --ipa) lên iPad/iPhone cắm cáp vào máy Windows.
+  Cài file .ipa My Librarian (build ở Mac bằng build-ipad.command --ipa) lên iPad/iPhone cắm cáp vào máy Windows.
   Gọi qua install-ios.cmd ở thư mục gốc (bấm đúp, hoặc kéo-thả file .ipa lên install-ios.cmd).
 
 .DESCRIPTION
   Không ký lại: .ipa đã được Mac ký bằng Personal Team (Apple ID miễn phí) cho các máy đã đăng ký vào team, nên chỉ cần
   chép lên máy. Dữ liệu trong app giữ nguyên (cùng Bundle ID, cùng team).
   Cần app "Apple Devices" (Microsoft Store) hoặc iTunes để Windows nói chuyện được với iPad/iPhone qua USB.
-  Công cụ cài: go-ios (MIT, github.com/danielpaulus/go-ios) – lần đầu script tự tải về %LOCALAPPDATA%\47-librarian\go-ios.
+  Công cụ cài: go-ios (MIT, github.com/danielpaulus/go-ios) – lần đầu script tự tải về %LOCALAPPDATA%\my-librarian\go-ios.
 
-  -Ipa <file>    file .ipa cần cài. Bỏ trống: lấy file 47-Librarian-*.ipa mới nhất trong: thư mục ghi ở file .ipa-share
+  -Ipa <file>    file .ipa cần cài. Bỏ trống: lấy file My-Librarian-*.ipa mới nhất trong: thư mục ghi ở file .ipa-share
                  (thư mục gốc dự án), $env:LIBRARIAN_IPA_DIR, dist (cả thư mục con), Downloads.
   -Device <UDID> chọn máy khi cắm nhiều iPad/iPhone.
 #>
@@ -53,7 +53,7 @@ if ($svc -and $svc.Status -ne 'Running') {
 }
 
 # --- 2. go-ios
-$toolDir = Join-Path $env:LOCALAPPDATA "47-librarian\go-ios\$GoIosVersion"
+$toolDir = Join-Path $env:LOCALAPPDATA "my-librarian\go-ios\$GoIosVersion"
 $ios = Join-Path $toolDir 'ios.exe'
 if (-not (Test-Path $ios)) {
     Say "Tải công cụ cài go-ios $GoIosVersion (một lần, ~150 MB gói npm)"
@@ -79,11 +79,11 @@ if (-not $Ipa) {
     if ($env:LIBRARIAN_IPA_DIR) { $dirs += $env:LIBRARIAN_IPA_DIR }
     $dirs += (Join-Path $root 'dist'), (Join-Path $env:USERPROFILE 'Downloads')
     $found = foreach ($d in $dirs) {
-        if ($d -and (Test-Path $d)) { Get-ChildItem $d -Filter '47-Librarian-*.ipa' -Recurse -Depth 2 -File -ErrorAction SilentlyContinue }
+        if ($d -and (Test-Path $d)) { Get-ChildItem $d -Filter 'My-Librarian-*.ipa' -Recurse -Depth 2 -File -ErrorAction SilentlyContinue }
     }
     $pick = $found | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $pick) {
-        Fail ("Không thấy file 47-Librarian-*.ipa. Kéo-thả file .ipa lên install-ios.cmd, hoặc ghi đường dẫn thư mục chứa" +
+        Fail ("Không thấy file My-Librarian-*.ipa. Kéo-thả file .ipa lên install-ios.cmd, hoặc ghi đường dẫn thư mục chứa" +
             " .ipa (vd. thư mục Google Drive/OneDrive) vào file .ipa-share ở thư mục dự án. Đã tìm trong:`n  " + ($dirs -join "`n  "))
     }
     $Ipa = $pick.FullName
@@ -149,5 +149,5 @@ if ($code -ne 0 -or $out -match '"level":"(error|fatal)"') {
     Fail ("Cài lỗi. Thử: mở khoá máy và cắm lại cáp; máy bật Chế độ nhà phát triển; còn dung lượng." +
         " Lỗi về chữ ký/profile: build lại .ipa trên Mac.")
 }
-Say 'XONG – đã cài 47 Librarian.' 'Green'
+Say 'XONG – đã cài My Librarian.' 'Green'
 Write-Host 'Lần đầu cài trên máy này: Cài đặt → Cài đặt chung → VPN & Quản lý thiết bị → tin cậy Apple ID của bạn.'

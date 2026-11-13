@@ -1,11 +1,11 @@
-; 47 Librarian - NSIS hooks (E10-01).
-; Du lieu app nam o <thu muc cai>\data (ban cu: %APPDATA%\47-librarian). Tauri khong tu xoa hai thu muc nay,
+; My Librarian - NSIS hooks (E10-01).
+; Du lieu app nam o <thu muc cai>\data (ban cu: %APPDATA%\my-librarian). Tauri khong tu xoa hai thu muc nay,
 ; nen khi go cai dat va ban tick "Delete the application data" thi xoa them. Cai de (cap nhat) khong dong toi.
 ; File sach trong thu vien KHONG bao gio bi dong toi.
 
 !macro NSIS_HOOK_PREUNINSTALL
   ; Go tac vu quet ngam trong Task Scheduler (E8-02) neu da dang ky. Bo qua neu khong co.
-  nsExec::Exec 'schtasks /Delete /TN "47 Librarian - Quet ngam" /F'
+  nsExec::Exec 'schtasks /Delete /TN "My Librarian - Quet ngam" /F'
   Pop $0
 !macroend
 
@@ -13,17 +13,17 @@
   ; Luat tuong lua cong 47470 do app them (nut "Sua" o man iPad, I3-07). Cai dat che do currentUser
   ; khong co quyen Admin nen chi xoa khi luat ton tai, kem hop UAC. Cap nhat thi giu luat.
   ${If} $UpdateMode <> 1
-    nsExec::Exec 'netsh advfirewall firewall show rule name="47 Librarian sync (TCP 47470)"'
+    nsExec::Exec 'netsh advfirewall firewall show rule name="My Librarian sync (TCP 47470)"'
     Pop $0
     ${If} $0 = 0
-      ExecShell "runas" "netsh" 'advfirewall firewall delete rule name="47 Librarian sync (TCP 47470)"' SW_HIDE
+      ExecShell "runas" "netsh" 'advfirewall firewall delete rule name="My Librarian sync (TCP 47470)"' SW_HIDE
     ${EndIf}
   ${EndIf}
 
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     SetShellVarContext current
-    RmDir /r "$APPDATA\47-librarian"
+    RmDir /r "$APPDATA\my-librarian"
     RmDir /r "$INSTDIR\data"
     RmDir "$INSTDIR"
   ${EndIf}

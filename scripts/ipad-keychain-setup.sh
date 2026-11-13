@@ -12,7 +12,7 @@ set -euo pipefail
 KC="$HOME/Library/Keychains/ipad-signing.keychain-db"
 LOGIN_KC="$HOME/Library/Keychains/login.keychain-db"
 SERVICE=librarian-ipad-signing
-BUNDLE_ID=vn.hungtrieu.librarian47.ipad
+BUNDLE_ID=vn.hungtrieu.mylibrarian.ipad
 
 if [ ! -f "$KC" ]; then
   echo "▶ Đặt mật khẩu cho keychain ký iPad (mật khẩu MỚI, tự chọn, ghi lại ở chỗ an toàn)"
