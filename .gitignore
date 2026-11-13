@@ -1,0 +1,20 @@
+/target
+*.db
+*.db-wal
+*.db-shm
+/sample/
+/crates/app/gen/
+/dist/
+/crates/ipad/gen/
+/.ipad-team
+
+# scripts/merge-categories.py
+merge-plan.csv
+merge-undo-*.jsonl
+/.ipa-share
+
+# Khoá ký APK debug – mỗi máy/người tự có (scripts/android-signing.mjs tự tạo từ ~/.android/debug.keystore)
+/crates/ipad/android/debug.keystore
+
+.DS_Store
+*.bak

@@ -1,0 +1,9 @@
+foliate-js @ 78914aef4466eb960965702401634c2cb348e9b1 (MIT) – https://github.com/johnfactotum/foliate-js; vendor/pdfjs = pdf.js 5.5.207 (Apache-2.0)
+Sửa đổi: search.js nhận thêm tuỳ chọn `locales` (ép locale khi tìm, dùng 'und' cho tìm không dấu tiếng Việt).
+Sửa đổi: paginator.js – thuộc tính `continuous` (flow="scrolled"): cuộn liền mạch qua các chương (giữ sẵn chương trước/sau
+  trong #container, bù scrollTop khi nội dung phía trên đổi cao). Áp lại sau khi nâng cấp foliate-js.
+Sửa đổi: mobi.js – getResourcesByMagic đọc đầu bản ghi song song theo lô 32 (file MOBI đọc lười qua HTTP Range).
+Sửa đổi: vendor/pdfjs/pdf.worker.mjs – ChunkedStream lưu dữ liệu theo khúc (SparseBytes, tối đa 384 MB, bỏ khúc cũ nhất)
+  thay vì new Uint8Array(cả file), để mở được PDF > 2 GB. Áp lại sau khi nâng cấp pdf.js: node scripts/patch-pdfjs.mjs ui/vendor/foliate-js/vendor/pdfjs/pdf.worker.mjs
+Sửa đổi: pdf.worker.mjs – Catalog.getPageDict: cây trang phẳng (Kids.length === Count) nhảy thẳng tới trang cần
+  (kể cả qua nút Pages có Count 1); chỉ tải trước kid của nút gốc khi ≤ 64 kid. (Cũng trong scripts/patch-pdfjs.mjs.)

@@ -1,0 +1,8 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "ui-mock", "runtimeExecutable": "node", "runtimeArgs": ["scripts/serve-ui.mjs", "5173"], "port": 5173 },
+    { "name": "ui-mock-big", "runtimeExecutable": "node", "runtimeArgs": ["scripts/serve-ui.mjs", "5174", "target/reader-samples-big"], "port": 5174 },
+    { "name": "ui-mock-real", "runtimeExecutable": "node", "runtimeArgs": ["scripts/serve-ui.mjs", "5175", "target/reader-samples-real"], "port": 5175 }
+  ]
+}

@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/scanner-cli", "crates/app", "crates/ipad"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4

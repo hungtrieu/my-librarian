@@ -1,0 +1,6 @@
+{
+  "identifier": "vn.hungtrieu.librarian47.android",
+  "bundle": {
+    "android": { "minSdkVersion": 26 }
+  }
+}

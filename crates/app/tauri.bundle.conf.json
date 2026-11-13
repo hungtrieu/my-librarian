@@ -1,0 +1,11 @@
+{
+  "build": {
+    "beforeBuildCommand": "cargo build --release -p librarian-cli"
+  },
+  "bundle": {
+    "resources": {
+      "../../target/release/librarian.exe": "librarian.exe",
+      "../../target/release/librarian-bg.exe": "librarian-bg.exe"
+    }
+  }
+}

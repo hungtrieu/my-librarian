@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "Quyền của cửa sổ chính",
+  "windows": ["main"],
+  "permissions": ["core:default", "barcode-scanner:default"]
+}
