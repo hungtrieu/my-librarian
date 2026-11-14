@@ -24,6 +24,9 @@ pub struct Config {
     /// Tự phân loại hộp thư đến mỗi lần quét (đọc metadata.opf, làm phẳng thư mục kiểu Calibre, tạo thư mục
     /// thể loại mới, chưa chắc → "Khác", dọn mọi file không phải sách và thư mục thừa vào Thùng rác). Mặc định BẬT.
     pub auto_triage: bool,
+    /// Mỗi lần quét, sách mới tải về có nội dung y hệt một cuốn đã xoá trước đây (xem deleted.rs) được tự đưa vào
+    /// Thùng rác. Mặc định BẬT.
+    pub auto_reject_deleted: bool,
     /// Ngưỡng tin cậy phân loại (E6-04).
     pub classify_high: u8,
     pub classify_medium: u8,
@@ -43,6 +46,7 @@ impl Default for Config {
             read_only: false,
             auto_clean_exact_in_background: false,
             auto_triage: true,
+            auto_reject_deleted: true,
             classify_high: 75,
             classify_medium: 45,
             hash_threads: 3,

@@ -190,6 +190,43 @@ fn exact_duplicates_cleaned_to_trash_keeper_kept() {
     assert_eq!((batches[0].kind.as_str(), batches[0].done), ("dedupe", 1));
 }
 
+/// "Dọn tất cả" chạy nền: báo tiến trình từng file (bước `trash`, x / y) và dừng được giữa chừng – file đã xoá
+/// được ghi DB, file còn lại giữ nguyên, lần sau dọn tiếp.
+#[test]
+fn clean_reports_progress_and_stops_on_cancel() {
+    let e = setup();
+    let keeper = e.sample.books.join("Văn học").join("Mắt Biếc.epub");
+    for i in 2..7 {
+        std::fs::copy(&keeper, e.sample.inbox.join(format!("Mắt Biếc ({i}).epub"))).unwrap();
+    }
+    analyze(&e);
+    let c = &e.lib.conn;
+    let groups = dedupe::exact_groups(c).unwrap();
+    let total: usize = groups.iter().map(|g| g.others.len()).sum();
+    assert!(total >= 6, "{total}");
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let steps = RefCell::new(Vec::new());
+    let on = |s: librarian_core::Step| {
+        steps.borrow_mut().push((s.phase, s.done, s.total));
+        if s.done == 2 {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    };
+    let rep = dedupe::clean_exact_with(c, &e.lib.config, &e.trash, &groups, &HashMap::new(), Some(&cancel), Some(&on))
+        .unwrap();
+    assert!(rep.cancelled);
+    assert_eq!(rep.trashed, 2);
+    assert_eq!(steps.borrow().first(), Some(&(trash::TRASH_PHASE, 0, total)));
+    assert!(steps.borrow().iter().all(|s| s.0 == trash::TRASH_PHASE && s.2 == total));
+    let left: usize = dedupe::exact_groups(c).unwrap().iter().map(|g| g.others.len()).sum();
+    assert_eq!(left, total - 2, "phần chưa xoá vẫn còn để lần sau dọn tiếp");
+    // Dọn tiếp tới hết.
+    let rep =
+        dedupe::clean_exact(c, &e.lib.config, &e.trash, &dedupe::exact_groups(c).unwrap(), &HashMap::new()).unwrap();
+    assert_eq!((rep.trashed, rep.cancelled), (total - 2, false));
+    assert!(keeper.exists());
+}
+
 #[test]
 fn keeper_changed_blocks_deletion() {
     let e = setup();
@@ -807,4 +844,87 @@ fn browse_groups_one_work_in_many_formats() {
     )
     .unwrap();
     assert!(pdf.items.iter().any(|i| matches!(i, Item::Book(b) if b.file_name == "Mắt Biếc.pdf")));
+}
+
+#[test]
+fn suspect_confidence_scores_strong_evidence_high_and_weak_low() {
+    let e = setup();
+    analyze(&e);
+    let c = &e.lib.conn;
+    let base = db::books_where(c, "status = 'present' AND format = 'pdf' LIMIT 1", []).unwrap().remove(0);
+    let mk = |f: &dyn Fn(&mut db::Book)| {
+        let mut b = base.clone();
+        b.norm_title = "truyen kieu".into();
+        b.norm_author = "nguyen du".into();
+        b.isbn = None;
+        b.series = None;
+        b.volume = None;
+        b.size = 1_000_000;
+        b.page_count = Some(200);
+        f(&mut b);
+        b
+    };
+    let a = mk(&|_| {});
+    // Cùng tên + cùng tác giả + dung lượng / số trang gần như nhau → tự dọn.
+    let close = mk(&|b| b.size = 1_020_000);
+    assert!(dedupe::pair_confidence(&a, &close) >= dedupe::AUTO_SUSPECT_CONFIDENCE);
+    // Cùng ISBN, dung lượng gần nhau → tự dọn dù tên khác.
+    let isbn = |b: &mut db::Book| b.isbn = Some("9786041234567".into());
+    let (ia, ib) = (
+        mk(&isbn),
+        mk(&|b| {
+            isbn(b);
+            b.norm_title = "kim van kieu".into();
+            b.size = 1_100_000
+        }),
+    );
+    assert!(dedupe::pair_confidence(&ia, &ib) >= dedupe::AUTO_SUSPECT_CONFIDENCE);
+    // Thiếu tác giả, hoặc dung lượng / số trang lệch nhiều, hoặc khác ISBN, hoặc khác tập → để người duyệt.
+    let no_author = mk(&|b| b.norm_author = String::new());
+    assert!(dedupe::pair_confidence(&a, &no_author) < dedupe::AUTO_SUSPECT_CONFIDENCE);
+    let bigger = mk(&|b| b.size = 3_000_000);
+    assert!(dedupe::pair_confidence(&a, &bigger) < dedupe::AUTO_SUSPECT_CONFIDENCE);
+    let pages = mk(&|b| b.page_count = Some(320));
+    assert!(dedupe::pair_confidence(&a, &pages) < dedupe::AUTO_SUSPECT_CONFIDENCE);
+    let other_isbn = mk(&|b| b.isbn = Some("9786040000000".into()));
+    assert!(dedupe::pair_confidence(&ia, &other_isbn) < dedupe::AUTO_SUSPECT_CONFIDENCE);
+    let (v1, v2) = (mk(&|b| b.volume = Some(1)), mk(&|b| b.volume = Some(2)));
+    assert!(dedupe::pair_confidence(&v1, &v2) < dedupe::AUTO_SUSPECT_CONFIDENCE);
+    // Nhóm bắc cầu: độ tin cậy là cặp yếu nhất.
+    assert_eq!(
+        dedupe::group_confidence(&[a.clone(), close.clone(), bigger.clone()]),
+        dedupe::pair_confidence(&a, &bigger).min(dedupe::pair_confidence(&close, &bigger))
+    );
+}
+
+#[test]
+fn high_confidence_suspects_cleaned_keeping_suggested_copy() {
+    let e = setup();
+    analyze(&e);
+    let c = &e.lib.conn;
+    let mut groups = dedupe::suspect_groups(c).unwrap();
+    let gi = groups
+        .iter()
+        .position(|g| g.members.iter().any(|b| b.file_name == "Truyen Kieu - ban in.pdf"))
+        .expect("nhóm Truyện Kiều");
+    // Chỉ nhóm này đạt ngưỡng; các nhóm khác (nếu có) phải được giữ nguyên.
+    for (i, g) in groups.iter_mut().enumerate() {
+        g.confidence = if i == gi { 100 } else { dedupe::AUTO_SUSPECT_CONFIDENCE - 1 };
+    }
+    let g = groups[gi].clone();
+    let keeper = g.members.iter().find(|b| b.id == g.keeper_id).unwrap().clone();
+    let others_in_other_groups: usize =
+        groups.iter().enumerate().filter(|(i, _)| *i != gi).map(|(_, g)| g.members.len()).sum();
+    let rep =
+        dedupe::clean_suspects_with(c, &e.lib.config, &e.trash, &groups, dedupe::AUTO_SUSPECT_CONFIDENCE, None, None)
+            .unwrap();
+    assert!(rep.failures.is_empty(), "{:?}", rep.failures);
+    assert_eq!(rep.trashed, g.members.len() - 1);
+    assert!(Path::new(&keeper.path).is_file(), "bản giữ còn nguyên");
+    for b in g.members.iter().filter(|b| b.id != keeper.id) {
+        assert!(!Path::new(&b.path).exists());
+        assert_eq!(db::get_book(c, b.id).unwrap().unwrap().status, "trashed");
+    }
+    let left: usize = dedupe::suspect_groups(c).unwrap().iter().map(|g| g.members.len()).sum();
+    assert_eq!(left, others_in_other_groups, "nhóm dưới ngưỡng không bị đụng tới");
 }

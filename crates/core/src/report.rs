@@ -29,6 +29,10 @@ pub struct ReportStats {
     /// Số file sách đã tự phân loại từ hộp thư đến ở đầu lần quét (khi bật `auto_triage`).
     #[serde(default)]
     pub auto_triaged: Option<usize>,
+    /// Số sách mới tải về trùng y hệt một cuốn đã xoá trước đây, đã tự đưa vào Thùng rác (khi bật
+    /// `auto_reject_deleted`).
+    #[serde(default)]
+    pub auto_rejected: Option<usize>,
 }
 
 /// Quét + băm + phát hiện trùng + đếm sách chờ phân loại. Lưu kết quả vào `scan_reports`.
@@ -100,7 +104,26 @@ pub fn run_analysis_with(
         &ScanOptions { cancel, progress: on.map(|_| &scan_cb as &dyn Fn(&scan::ScanProgress)), kind: Some(kind) },
     )?;
     let mut st = ReportStats { scan: summary.clone(), auto_triaged, ..Default::default() };
-    if !summary.cancelled {
+    // Sách đã xoá trước đây mà lại được tải về (nội dung y hệt): đưa thẳng vào Thùng rác, trước khi băm / tìm trùng.
+    if !summary.cancelled && cfg.auto_reject_deleted && !cfg.read_only {
+        let r =
+            crate::deleted::reject_known(conn, cfg, auto_clean.unwrap_or(&crate::trash::SystemTrasher), cancel, on)?;
+        if r.trash.trashed > 0 || !r.trash.failures.is_empty() {
+            tracing::info!(
+                "loại sách đã xoá trước đây: {} vào Thùng rác, {} lỗi",
+                r.trash.trashed,
+                r.trash.failures.len()
+            );
+        }
+        for f in &r.trash.failures {
+            tracing::warn!("loại sách đã xoá: {}: {}", f.path, f.message);
+        }
+        st.auto_rejected = Some(r.trash.trashed);
+        if r.cancelled {
+            st.scan.cancelled = true;
+        }
+    }
+    if !st.scan.cancelled {
         let hs = hash::ensure_hashes_with(conn, cfg.hash_threads, cancel, on)?;
         st.hash_errors = hs.errors.len();
         if hs.cancelled || is_cancelled() {
@@ -263,6 +286,9 @@ pub fn banner(r: &Report) -> Option<String> {
     }
     if s.scan.missing > 0 {
         parts.push(format!("{} sách mất", s.scan.missing));
+    }
+    if let Some(n) = s.auto_rejected.filter(|&n| n > 0) {
+        parts.push(format!("{n} sách đã xoá trước đây bị tải lại – đã tự đưa vào Thùng rác"));
     }
     let mut out = String::new();
     let label = if r.kind == "background" { "lần quét ngầm" } else { "lần quét" };

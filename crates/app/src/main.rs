@@ -14,6 +14,7 @@ use librarian_core::moves::{self, BatchInfo, MoveReport, MoveRequest, Operation,
 use librarian_core::progress::{self, Watchdog};
 use librarian_core::reader::{self, ComicSource, ReaderInfo};
 use librarian_core::report::{self, ReportStats};
+use librarian_core::retitle::{self, RetitleOptions, RetitleReport};
 use librarian_core::scan::ScanProgress;
 use librarian_core::trash::{self, SystemTrasher, TrashReport};
 use librarian_core::Step;
@@ -34,7 +35,9 @@ struct AppState {
     home: PathBuf,
     lib: Shared,
     scan_cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
-    /// Người dùng đã đồng ý đóng app khi đang quét: đang dừng quét, xong thì thoát.
+    /// Đang dọn trùng chắc chắn (chạy nền, có tiến trình): cờ dừng của lần dọn đó.
+    clean_cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    /// Người dùng đã đồng ý đóng app khi đang quét / dọn trùng: đang dừng, xong thì thoát.
     quitting: Arc<AtomicBool>,
     /// Sách mở từ Explorer nhưng không nằm trong thư viện: id âm → đường dẫn (không ghi DB).
     external: External,
@@ -117,12 +120,15 @@ struct Overview {
     notice: Option<String>,
     report: Option<report::Report>,
     scanning: bool,
+    /// Đang dọn trùng chắc chắn ở nền (giao diện tải lại thì mở lại hộp tiến trình).
+    cleaning: bool,
     home: String,
 }
 
 #[tauri::command]
 async fn overview(state: State<'_, AppState>) -> CmdResult<Overview> {
     let scanning = is_scanning(&state);
+    let cleaning = is_cleaning(&state);
     let home = state.home.to_string_lossy().into_owned();
     with_lib(&state.lib, move |lib| {
         let library_ok = lib.config.library_root.as_ref().is_some_and(|r| r.is_dir());
@@ -154,6 +160,7 @@ async fn overview(state: State<'_, AppState>) -> CmdResult<Overview> {
             notice: lib.notice.take(),
             report: rep,
             scanning,
+            cleaning,
             home,
         })
     })
@@ -203,6 +210,9 @@ struct DoneEvent {
 /// Quét + băm + phân tích trên luồng riêng với kết nối DB riêng (WAL cho phép UI đọc song song).
 #[tauri::command]
 fn start_scan(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    if is_cleaning(&state) {
+        return Err("Đang dọn trùng – đợi xong rồi quét".into());
+    }
     let mut slot = state.scan_cancel.lock().map_err(err)?;
     if slot.is_some() {
         return Err("Đang quét".into());
@@ -299,25 +309,43 @@ fn is_scanning(state: &AppState) -> bool {
     state.scan_cancel.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
-/// Đóng app khi đang quét (người dùng đã xác nhận): báo dừng quét, đợi luồng quét lưu phần đã làm
-/// và nhả khoá rồi mới thoát. Ổ chậm có thể mất một lúc cho file đang đọc dở; quá lâu thì thoát luôn
-/// (DB dùng giao dịch nên vẫn an toàn, lần sau quét tiếp phần còn lại).
+fn is_cleaning(state: &AppState) -> bool {
+    state.clean_cancel.lock().map(|g| g.is_some()).unwrap_or(false)
+}
+
+/// Việc nền đang chạy mà đóng app phải hỏi lại: `scan` · `clean` · `None`.
+fn busy_kind(state: &AppState) -> Option<&'static str> {
+    if is_cleaning(state) {
+        Some("clean")
+    } else if is_scanning(state) {
+        Some("scan")
+    } else {
+        None
+    }
+}
+
+/// Đóng app khi đang quét / dọn trùng (người dùng đã xác nhận): báo dừng, đợi luồng nền lưu phần đã làm
+/// và nhả khoá rồi mới thoát. Ổ chậm có thể mất một lúc cho file đang đọc / đang xoá dở; quá lâu thì thoát luôn
+/// (mỗi file đã xử lý được ghi DB ngay nên vẫn an toàn, lần sau làm tiếp phần còn lại).
 #[tauri::command]
 fn quit_app(app: AppHandle, state: State<'_, AppState>) {
     state.quitting.store(true, Ordering::Relaxed);
-    if let Ok(g) = state.scan_cancel.lock() {
-        if let Some(c) = g.as_ref() {
-            c.store(true, Ordering::Relaxed);
+    let slots = [state.scan_cancel.clone(), state.clean_cancel.clone()];
+    for slot in &slots {
+        if let Ok(g) = slot.lock() {
+            if let Some(c) = g.as_ref() {
+                c.store(true, Ordering::Relaxed);
+            }
         }
     }
-    let slot = state.scan_cancel.clone();
     std::thread::spawn(move || {
+        let busy = || slots.iter().any(|s| s.lock().map(|g| g.is_some()).unwrap_or(false));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        while std::time::Instant::now() < deadline && slot.lock().map(|g| g.is_some()).unwrap_or(false) {
+        while std::time::Instant::now() < deadline && busy() {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        let stopped = !slot.lock().map(|g| g.is_some()).unwrap_or(false);
-        tracing::info!("đóng app khi đang quét: {}", if stopped { "đã dừng quét" } else { "quá 15 giây, thoát luôn" });
+        let stopped = !busy();
+        tracing::info!("đóng app khi đang chạy nền: {}", if stopped { "đã dừng" } else { "quá 15 giây, thoát luôn" });
         app.exit(0);
         // Phòng khi vòng sự kiện không thoát (vd. luồng quét đang kẹt ở một lần đọc ổ đĩa): thoát hẳn tiến trình.
         std::thread::sleep(std::time::Duration::from_secs(3));
@@ -454,6 +482,29 @@ async fn trash_books(state: State<'_, AppState>, ids: Vec<i64>) -> CmdResult<Tra
     .await
 }
 
+/// Sửa tiêu đề (một cuốn, hoặc mọi định dạng của một tác phẩm): DB + tên file + (EPUB/FB2) nội dung sách.
+/// Xem `librarian_core::retitle`. Không chạy khi đang quét / dọn trùng (đều đụng tới chính các file này).
+#[tauri::command]
+async fn retitle_books(
+    state: State<'_, AppState>,
+    ids: Vec<i64>,
+    title: String,
+    rename_file: bool,
+    write_content: bool,
+) -> CmdResult<RetitleReport> {
+    if ids.iter().any(|&i| i < 0) {
+        return Err("Chỉ sửa được sách trong thư viện".into());
+    }
+    if busy_kind(&state).is_some() {
+        return Err("Đang quét hoặc dọn trùng – đợi xong rồi sửa tiêu đề".into());
+    }
+    let opts = RetitleOptions { rename_file, write_content };
+    with_lib(&state.lib, move |lib| {
+        refreshed(lib, |lib| retitle::retitle_books(&lib.conn, &lib.config, &SystemTrasher, &ids, &title, opts))
+    })
+    .await
+}
+
 // ------------------------------------------------------------------ trùng lặp
 
 #[tauri::command]
@@ -467,18 +518,140 @@ async fn exact_groups(state: State<'_, AppState>) -> CmdResult<Vec<ExactGroup>> 
     .await
 }
 
+#[derive(Clone, Serialize)]
+struct CleanDone {
+    ok: bool,
+    message: Option<String>,
+    report: Option<TrashReport>,
+}
+
+/// Dọn các nhóm trùng chắc chắn đã chọn – chạy nền (luồng + kết nối DB riêng) vì có thể hàng nghìn file trên
+/// ổ chậm. Giao diện nhận `clean-progress` (bước `trash` x / y, rồi `refresh`), `clean-health` mỗi giây (giám sát
+/// treo 60 giây như khi quét) và đúng một `clean-done`. Dừng bằng `cancel_clean` hoặc khi đóng app.
 #[tauri::command]
-async fn clean_exact(
+fn start_clean_exact(
+    app: AppHandle,
     state: State<'_, AppState>,
     hashes: Vec<String>,
     keep: HashMap<String, i64>,
-) -> CmdResult<TrashReport> {
-    with_lib(&state.lib, move |lib| {
+) -> CmdResult<()> {
+    spawn_clean(app, state, move |lib, cancel, on| {
         let groups: Vec<ExactGroup> =
             dedupe::exact_groups(&lib.conn)?.into_iter().filter(|g| hashes.contains(&g.full_hash)).collect();
-        refreshed(lib, |lib| dedupe::clean_exact(&lib.conn, &lib.config, &SystemTrasher, &groups, &keep))
+        dedupe::clean_exact_with(&lib.conn, &lib.config, &SystemTrasher, &groups, &keep, Some(cancel), Some(on))
     })
-    .await
+}
+
+/// Tự dọn nghi trùng có độ tin cậy ≥ `dedupe::AUTO_SUSPECT_CONFIDENCE`: tính lại nhóm (bước `suspect_hash`) rồi
+/// giữ bản đề xuất, đưa bản còn lại vào Thùng rác (bước `trash`). Cùng sự kiện / giám sát treo / dừng như
+/// [`start_clean_exact`].
+#[tauri::command]
+fn start_clean_suspects(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    spawn_clean(app, state, move |lib, cancel, on| {
+        let threads = lib.config.hash_threads.max(1);
+        let Some(groups) = dedupe::suspect_groups_with(&lib.conn, threads, Some(cancel), Some(on))? else {
+            return Ok(TrashReport { cancelled: true, ..Default::default() });
+        };
+        dedupe::clean_suspects_with(
+            &lib.conn,
+            &lib.config,
+            &SystemTrasher,
+            &groups,
+            dedupe::AUTO_SUSPECT_CONFIDENCE,
+            Some(cancel),
+            Some(on),
+        )
+    })
+}
+
+/// Chạy một việc dọn ở nền (luồng + kết nối DB riêng, cùng khoá với quét), phát `clean-progress` / `clean-health`
+/// / đúng một `clean-done`; dừng bằng `cancel_clean`.
+fn spawn_clean<F>(app: AppHandle, state: State<'_, AppState>, job: F) -> CmdResult<()>
+where
+    F: FnOnce(&Library, &AtomicBool, &dyn Fn(Step)) -> librarian_core::Result<TrashReport> + Send + 'static,
+{
+    if is_scanning(&state) {
+        return Err("Đang quét thư viện – đợi quét xong rồi dọn".into());
+    }
+    let mut slot = state.clean_cancel.lock().map_err(err)?;
+    if slot.is_some() {
+        return Err("Đang dọn trùng".into());
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    *slot = Some(cancel.clone());
+    drop(slot);
+    let home = state.home.clone();
+    let slot_ref = state.clean_cancel.clone();
+    std::thread::spawn(move || {
+        let reported = Arc::new(AtomicBool::new(false));
+        let finish_ui = {
+            let (app, slot_ref, cancel, reported) = (app.clone(), slot_ref.clone(), cancel.clone(), reported.clone());
+            move |ev: CleanDone| {
+                if reported.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                if let Ok(mut s) = slot_ref.lock() {
+                    if s.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cancel)) {
+                        *s = None;
+                    }
+                }
+                let _ = app.emit("clean-done", ev);
+            }
+        };
+        let health_app = app.clone();
+        let on_stall = {
+            let finish_ui = finish_ui.clone();
+            move |stall: &progress::Stall| {
+                finish_ui(CleanDone { ok: false, message: Some(stall.to_string()), report: None });
+            }
+        };
+        let watchdog = Watchdog::start_with(
+            cancel.clone(),
+            progress::STALL_LIMIT,
+            move |h| {
+                let _ = health_app.emit("clean-health", h);
+            },
+            on_stall,
+        );
+        let res = (|| -> librarian_core::Result<TrashReport> {
+            // Cùng khoá với quét (app + tác vụ quét ngầm): không dọn khi một tiến trình khác đang quét.
+            let _lock = lock::ScanLock::try_acquire(&home)?;
+            let lib = Library::open(&home)?;
+            let emit_step = |s: Step| {
+                watchdog.observe(s);
+                let _ = app.emit("clean-progress", s);
+            };
+            let rep = job(&lib, &cancel, &emit_step)?;
+            // Badge / banner: tính lại số trùng, nghi trùng… (kể cả khi đã dừng giữa chừng).
+            emit_step(Step { phase: "refresh", done: 0, total: 0 });
+            if let Err(e) = report::refresh_counts(&lib.conn, &lib.config) {
+                tracing::warn!("cập nhật số liệu báo cáo lỗi: {e}");
+            }
+            Ok(rep)
+        })();
+        let stall = watchdog.finish();
+        let ev = match (res, stall) {
+            (_, Some(stall)) => CleanDone { ok: false, message: Some(stall.to_string()), report: None },
+            (Ok(r), None) => CleanDone { ok: true, message: None, report: Some(r) },
+            (Err(librarian_core::Error::Locked), None) => CleanDone {
+                ok: false,
+                message: Some("Tác vụ quét ngầm đang chạy – thử lại sau ít phút".into()),
+                report: None,
+            },
+            (Err(e), None) => CleanDone { ok: false, message: Some(e.to_string()), report: None },
+        };
+        finish_ui(ev);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_clean(state: State<'_, AppState>) {
+    if let Ok(g) = state.clean_cancel.lock() {
+        if let Some(c) = g.as_ref() {
+            c.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 #[tauri::command]
@@ -1266,18 +1439,20 @@ fn main() {
             home: home.clone(),
             lib: Arc::new(Mutex::new(lib)),
             scan_cancel: Arc::new(Mutex::new(None)),
+            clean_cancel: Arc::new(Mutex::new(None)),
             quitting: Arc::new(AtomicBool::new(false)),
             external,
             pending_open: Mutex::new(book_arg(&args)),
             sync: Mutex::new(None),
         })
-        // Đóng cửa sổ khi đang quét → hỏi lại trên giao diện (sự kiện `close-requested`) thay vì cắt ngang.
+        // Đóng cửa sổ khi đang quét / dọn trùng → hỏi lại trên giao diện (sự kiện `close-requested`, kèm loại việc)
+        // thay vì cắt ngang.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<AppState>();
-                if is_scanning(&state) && !state.quitting.load(Ordering::Relaxed) {
+                if let Some(kind) = busy_kind(&state).filter(|_| !state.quitting.load(Ordering::Relaxed)) {
                     api.prevent_close();
-                    let _ = window.emit("close-requested", ());
+                    let _ = window.emit("close-requested", kind);
                 }
             }
         })
@@ -1335,9 +1510,12 @@ fn main() {
             toggle_fullscreen,
             open_recycle_bin,
             trash_books,
+            retitle_books,
             exact_groups,
-            clean_exact,
+            start_clean_exact,
+            cancel_clean,
             suspect_groups,
+            start_clean_suspects,
             decide,
             propose,
             apply_moves,

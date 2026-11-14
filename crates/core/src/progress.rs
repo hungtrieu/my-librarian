@@ -68,7 +68,10 @@ pub fn phase_label(phase: &str) -> &'static str {
         "hash_quick" => "Băm nhanh",
         "hash_full" => "Băm đầy đủ",
         "suspect_hash" => "Băm bổ sung cho nghi trùng",
+        "reject_deleted" => "Loại sách đã xoá trước đây",
         "analyze" => "Phân tích trùng & thể loại",
+        "trash" => "Đưa file vào Thùng rác",
+        "refresh" => "Cập nhật số liệu",
         "start" => "Bắt đầu",
         _ => "Bước không rõ",
     }
@@ -330,6 +333,7 @@ mod tests {
             "hash_full",
             "analyze",
             "suspect_hash",
+            "reject_deleted",
         ] {
             assert_ne!(phase_label(p), "Bước không rõ", "{p}");
         }

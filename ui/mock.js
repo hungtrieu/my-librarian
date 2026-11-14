@@ -41,7 +41,7 @@ add({ title: 'Sách hỏng', file_name: 'Sách hỏng.epub', category: 'Văn h�
 add({ title: 'Sách Kindle mua', authors: 'Amazon', category: 'Văn học', format: 'azw3', drm: true });
 const byId = (id) => books.find((b) => b.id === id);
 const present = () => books.filter((b) => !b.gone);
-let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_clean_exact_in_background: false, auto_triage: true, classify_high: 75, classify_medium: 45, hash_threads: 3, scan_time: '03:00' };
+let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_clean_exact_in_background: false, auto_triage: true, auto_reject_deleted: true, classify_high: 75, classify_medium: 45, hash_threads: 3, scan_time: '03:00' };
 const decided = new Set();
 const TEXT = new Set(['epub', 'mobi', 'prc', 'azw', 'azw3', 'kf8', 'fb2', 'txt']);
 // Hai thiết bị mẫu; ?nodevices=1 để xem lúc chưa ghép.
@@ -59,7 +59,9 @@ function exact() {
 }
 function suspects() {
   const m = [books[0], inbox[1]].filter((b) => !b.gone);
-  return m.length === 2 && !decided.has('mb') ? [{ key: 'mb', reason: 'Cùng tên chuẩn hoá “mat biec”', members: m }] : [];
+  // Mục "đã xoá trước đây" (id âm, xem deleted.rs): sách mới tải về gần giống một cuốn người dùng đã xoá.
+  const ghost = { ...inbox[1], id: -1, status: 'deleted', size: Math.round(inbox[1].size * 0.8), rel_path: 'Văn học\\Mắt Biếc (bản cũ).epub' };
+  return m.length === 2 && !decided.has('mb') ? [{ key: 'mb', reason: 'Cùng tên chuẩn hoá “mat biec”', members: [...m, ghost], confidence: 72, keeper_id: m[0].id, has_deleted: true }] : [];
 }
 function query(q) {
   let r = present();
@@ -110,6 +112,7 @@ const cats = () => ['Công nghệ', 'Tiểu sử - Hồi ký', 'Văn học', 'tr
 const trash = (ids) => { const t = ids.map(byId).filter(Boolean); t.forEach((b) => { b.gone = true; }); batches.unshift({ id: batches.length + 1, kind: 'trash', created_at: Math.floor(Date.now() / 1000), undone_at: null, done: t.length, failed: 0, bytes: t.reduce((s, b) => s + b.size, 0), ops: t.map((b) => ({ id: b.id, kind: 'trash', src: b.path, dst: null, status: 'done' })) });
   return { batch_id: batches.length, trashed: t.length, freed_bytes: t.reduce((s, b) => s + b.size, 0), failures: [], aborted: null }; };
 
+const mockClean = { cancel: false };
 const handlers = {
   overview: () => ({ config, library_ok: !!config.library_root, home: 'C:\\Users\\ban\\AppData\\Roaming\\my-librarian', scanning: false, categories: cats(), report: report(),
     banner: `Từ lần quét ngầm gần nhất: ${suspects().length} nhóm nghi trùng, ${exact().length} bản trùng chắc chắn, ${present().filter((b) => b.in_inbox).length} sách mới chờ phân loại.`,
@@ -122,10 +125,32 @@ const handlers = {
   set_not_worth: ({ ids, on }) => ids.filter((id) => { const b = byId(id); if (!b || !!b.not_worth === on) return false; b.not_worth = on; return true; }).length,
   set_read_status: ({ ids, status }) => ids.forEach((id) => { const b = byId(id); b.read_status = status; b.last_read_at = Math.floor(Date.now() / 1000); }),
   exact_groups: exact,
-  clean_exact: () => trash(exact().flatMap((g) => g.others.map((o) => o.id))),
+  // Dọn trùng chạy nền: tiến trình từng file, dừng được (cancel_clean).
+  start_clean_exact: () => {
+    const ids = exact().flatMap((g) => g.others.map((o) => o.id));
+    const total = Math.max(ids.length, 40); // giả lập lô lớn để thấy thanh tiến trình
+    let done = 0;
+    mockClean.cancel = false;
+    emit('clean-progress', { phase: 'trash', done, total });
+    const t = setInterval(() => {
+      if (mockClean.cancel) { clearInterval(t); const r = trash(ids.slice(0, Math.min(done, ids.length))); emit('clean-done', { ok: true, report: { ...r, cancelled: true } }); return; }
+      done++;
+      emit('clean-progress', { phase: 'trash', done, total });
+      if (done >= total) { clearInterval(t); emit('clean-progress', { phase: 'refresh', done: 0, total: 0 }); setTimeout(() => emit('clean-done', { ok: true, report: { ...trash(ids), cancelled: false } }), 400); }
+    }, 120);
+  },
+  cancel_clean: () => { mockClean.cancel = true; },
   suspect_groups: suspects,
+  start_clean_suspects: () => { setTimeout(() => emit('clean-done', { ok: true, report: { batch_id: 1, trashed: 0, freed_bytes: 0, failures: [], aborted: null, cancelled: false } }), 300); },
   decide: () => { decided.add('mb'); return 1; },
   trash_books: ({ ids }) => trash(ids),
+  retitle_books: ({ ids, title, renameFile, writeContent }) => ({ batch_id: 1, title, failures: [], done: ids.map(byId).map((b) => {
+    const ext = b.file_name.slice(b.file_name.lastIndexOf('.')), dir = b.path.slice(0, b.path.lastIndexOf('\\') + 1);
+    const old = b.path; b.title = title;
+    if (renameFile) { b.file_name = title.replace(/[:]/g, ' -').replace(/[?*<>]/g, '') + ext; b.path = dir + b.file_name; }
+    const written = writeContent && ['epub', 'fb2'].includes(b.format);
+    return { book_id: b.id, old_path: old, new_path: b.path, renamed: !!renameFile, content_written: written, note: writeContent && !written ? `${b.format.toUpperCase()} chưa ghi được tiêu đề vào nội dung – chỉ sửa trong thư viện và tên file` : null };
+  }) }),
   propose: () => ({ targets: cats().flatMap((c) => [{ label: c.name, path: c.path }, ...c.series_dirs.map((s) => ({ label: `${c.name} › ${s}`, path: c.path + '\\' + s }))]),
     proposals: inbox.filter((b) => !b.gone).map((b) => {
       const p = { book: b, target: null, target_label: null, confidence: 0, bucket: 'Manual', preselected: false, reason: 'Không đủ thông tin để đoán thể loại', suggestion: null };

@@ -218,7 +218,20 @@ pub(crate) fn upsert_file(
 ) -> Result<i64> {
     let format = Format::from_path(path).expect("đã lọc định dạng");
     let loc = locate(cfg, root, root_kind, path);
-    let rec = build_record(path, format, &loc);
+    let mut rec = build_record(path, format, &loc);
+    // Tiêu đề người dùng đã sửa trong app thắng tiêu đề đọc từ file (xem retitle.rs).
+    if let Some(id) = existing {
+        let user_title: Option<String> =
+            conn.query_row("SELECT user_title FROM books WHERE id = ?1", [id], |r| r.get(0)).optional()?.flatten();
+        if let Some(t) = user_title {
+            let n = normalize_title(&t);
+            if !n.is_empty() {
+                rec.norm_title = n;
+            }
+            rec.title = t;
+            rec.title_from_meta = true;
+        }
+    }
     let p = path.to_string_lossy();
     let file_name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let t = now();
@@ -409,6 +422,21 @@ pub fn scan(conn: &Connection, cfg: &Config, opts: &ScanOptions) -> Result<ScanS
                 Some((id, s, m, st)) if s == size && m == mtime && st == "present" => {
                     c.execute("UPDATE books SET last_seen_scan = ?2 WHERE id = ?1", params![id, scan_id])?;
                     sum.unchanged += 1;
+                }
+                Some((id, _, _, st)) if st == "trashed" => {
+                    // Sách đã xoá xuất hiện lại đúng chỗ cũ: khôi phục từ Thùng rác → gỡ khỏi sổ sách đã xoá;
+                    // file khác (tải lại) → coi như sách mới để bước loại sách đã xoá xét tới.
+                    let restored = crate::deleted::on_reappear(c, id, path, size, mtime)?;
+                    upsert_file(c, cfg, root_id, &root, root_kind, path, size, mtime, Some(scan_id), Some(id))?;
+                    if restored {
+                        sum.updated += 1;
+                    } else {
+                        c.execute(
+                            "UPDATE books SET first_seen_scan = ?2, added_at = ?3 WHERE id = ?1",
+                            params![id, scan_id, now()],
+                        )?;
+                        sum.added += 1;
+                    }
                 }
                 Some((id, _, _, _)) => {
                     upsert_file(c, cfg, root_id, &root, root_kind, path, size, mtime, Some(scan_id), Some(id))?;

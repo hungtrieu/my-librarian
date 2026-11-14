@@ -172,7 +172,12 @@ pub fn undo_batch(conn: &Connection, cfg: &Config, batch_id: i64) -> Result<Undo
     let (kind, undone): (String, Option<i64>) = conn
         .query_row("SELECT kind, undone_at FROM batches WHERE id = ?1", [batch_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|_| Error::msg(format!("Không có lô #{batch_id}")))?;
-    if kind == "trash" || kind == "dedupe" {
+    if kind == "retitle" {
+        return Err(Error::msg(
+            "Sửa tiêu đề không hoàn tác theo lô – hãy sửa lại tiêu đề cũ (nếu đã ghi vào nội dung sách, bản gốc nằm trong Thùng rác Windows)",
+        ));
+    }
+    if matches!(kind.as_str(), "trash" | "dedupe" | "dedupe_suspect" | crate::deleted::REJECT_KIND) {
         return Err(Error::msg(
             "Lô này đã đưa file vào Thùng rác – hãy khôi phục bằng Restore trong Thùng rác Windows, rồi quét lại",
         ));

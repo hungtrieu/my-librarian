@@ -13,12 +13,7 @@ pub fn read(path: &Path) -> Result<Metadata, String> {
     let container = decode_utf8(&read_zip_entry(&mut zip, "META-INF/container.xml", XML_LIMIT)?);
     let doc = roxmltree::Document::parse_with_options(&container, xml_options())
         .map_err(|e| format!("container.xml: {e}"))?;
-    let opf_path = doc
-        .descendants()
-        .find(|n| n.tag_name().name() == "rootfile")
-        .and_then(|n| n.attribute("full-path"))
-        .ok_or("thiếu rootfile")?
-        .to_string();
+    let opf_path = rootfile(&doc)?;
     let opf = decode_utf8(&read_zip_entry(&mut zip, &opf_path, XML_LIMIT)?);
     let mut md = parse_opf(&opf)?;
     // Font obfuscation cũng dùng encryption.xml; chỉ coi là DRM khi có thuật toán khác font.
@@ -29,6 +24,22 @@ pub fn read(path: &Path) -> Result<Metadata, String> {
             && !s.contains("http://ns.adobe.com/pdf/enc#RC");
     }
     Ok(md)
+}
+
+fn rootfile(doc: &roxmltree::Document) -> Result<String, String> {
+    Ok(doc
+        .descendants()
+        .find(|n| n.tag_name().name() == "rootfile")
+        .and_then(|n| n.attribute("full-path"))
+        .ok_or("thiếu rootfile")?
+        .to_string())
+}
+
+/// Đường dẫn OPF trong zip, từ nội dung `META-INF/container.xml`.
+pub fn opf_path(container: &str) -> Result<String, String> {
+    let doc =
+        roxmltree::Document::parse_with_options(container, xml_options()).map_err(|e| format!("container.xml: {e}"))?;
+    rootfile(&doc)
 }
 
 pub fn parse_opf(opf: &str) -> Result<Metadata, String> {

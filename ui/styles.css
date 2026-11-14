@@ -210,6 +210,8 @@ table.list select { max-width: 260px; height: 28px; border-radius: 6px; border: 
 .compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
 .cmp-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .cmp-card .cv { width: 120px; align-self: center; }
+.cmp-card.deleted { border-style: dashed; opacity: .85; }
+.cmp-card.deleted .cv { filter: grayscale(1); }
 .cmp-card dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; font-size: 12.5px; }
 .cmp-card dt { color: var(--text-2); }
 .cmp-card dd { margin: 0; word-break: break-word; user-select: text; }
@@ -239,6 +241,10 @@ table.list select { max-width: 260px; height: 28px; border-radius: 6px; border: 
 .modal h3 { margin: 0 0 8px; font-size: 17px; }
 .modal p { margin: 0 0 16px; color: var(--text-2); }
 .modal .actions { display: flex; justify-content: flex-end; gap: 8px; }
+.text-input { width: 100%; height: 34px; border-radius: 8px; border: 1px solid var(--line); background: var(--input); padding: 0 10px; outline: none; }
+.text-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.modal .check { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; }
+.modal .check input { margin-top: 3px; }
 @keyframes fade { from { opacity: 0; } }
 #toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 70; }
 .toast { background: #2c2c2e; color: #fff; padding: 10px 14px; border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); display: flex; gap: 12px; align-items: center; max-width: 440px; animation: fade 0.15s; }

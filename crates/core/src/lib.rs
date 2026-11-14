@@ -15,6 +15,8 @@ pub mod covers;
 pub mod db;
 #[cfg(feature = "desktop")]
 pub mod dedupe;
+#[cfg(feature = "desktop")]
+pub mod deleted;
 pub mod error;
 pub mod formats;
 #[cfg(feature = "desktop")]
@@ -33,6 +35,8 @@ pub mod progress;
 pub mod reader;
 #[cfg(feature = "desktop")]
 pub mod report;
+#[cfg(feature = "desktop")]
+pub mod retitle;
 #[cfg(feature = "desktop")]
 pub mod scan;
 pub mod search;

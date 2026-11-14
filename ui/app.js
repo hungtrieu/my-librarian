@@ -6,7 +6,7 @@ const TAURI = window.__TAURI__;
 const api = TAURI ? { invoke: TAURI.core.invoke, listen: TAURI.event.listen } : await import('./mock.js');
 const call = (cmd, args = {}) => api.invoke(cmd, args);
 const COVER_FORMATS = new Set(['epub', 'mobi', 'azw', 'azw3', 'cbz', 'cbr', 'fb2']);
-const coverUrl = (b) => (TAURI && COVER_FORMATS.has(b.format) ? `http://cover.localhost/${b.id}?v=${b.mtime}` : null);
+const coverUrl = (b) => (TAURI && b.id > 0 && COVER_FORMATS.has(b.format) ? `http://cover.localhost/${b.id}?v=${b.mtime}` : null);
 // Nội dung sách cho trình đọc (giao thức book://). Bản xem trước trên trình duyệt dùng file mẫu của serve-ui.
 const bookBase = (b) => (TAURI ? `http://book.localhost/${b.id}/` : `/__book/${b.format}/`);
 
@@ -76,6 +76,7 @@ async function refreshOverview() {
   S.devices = await call('ipad_devices').catch(() => []);
   if (S.ov.notice) modal({ title: 'Đã khôi phục dữ liệu thư viện', body: S.ov.notice, cancel: null, ok: 'Đã hiểu' });
   S.scanning = S.scanning || S.ov.scanning;
+  if (S.ov.cleaning && !CL.el) openCleanModal(); // giao diện tải lại khi đang dọn trùng ở nền
   renderNav();
   renderScanBox();
   renderBanner();
@@ -162,6 +163,8 @@ function progressText(p) {
     case 'hash_quick': return { text: `Đang băm nhanh ${of('file')}`, pct };
     case 'hash_full': return { text: `Đang băm đầy đủ ${of('file')}`, pct };
     case 'suspect_hash': return { text: `Đang băm bổ sung để tìm nghi trùng ${of('file')}`, pct };
+    case 'reject_deleted': return { text: `Đang so sách mới với sách đã xoá trước đây ${of('sách')}`, pct };
+    case 'trash': return { text: `Đang đưa sách đã xoá trước đây (tải lại) vào Thùng rác ${of('file')}`, pct };
     case 'analyze': {
       const part = ['tìm trùng chắc chắn', 'dọn trùng chắc chắn', 'tìm nghi trùng', 'đề xuất thể loại'][p.done || 0] || 'hoàn tất';
       return { text: `Đang phân tích: ${part} (phần ${Math.min((p.done || 0) + 1, p.total || 4)} / ${p.total || 4})`, pct };
@@ -194,19 +197,25 @@ async function startScan() {
 }
 
 api.listen('scan-progress', (e) => { S.scanning = true; S.progress = e.payload; renderScanBox(); });
-// Bấm đóng cửa sổ khi đang quét: hỏi lại; đồng ý thì dừng quét (lưu phần đã làm) rồi app tự thoát.
+// Bấm đóng cửa sổ khi đang quét / dọn trùng (payload: 'scan' | 'clean'): hỏi lại; đồng ý thì dừng việc đó
+// (phần đã làm được giữ lại) rồi app tự thoát.
 let closeAsked = false;
-api.listen('close-requested', async () => {
+api.listen('close-requested', async (e) => {
   if (closeAsked || S.quitting) return;
   closeAsked = true;
-  const ok = await modal({
+  const clean = e.payload === 'clean';
+  const ok = await modal(clean ? {
+    title: 'Đang dọn trùng chắc chắn',
+    body: 'Việc đưa bản trùng vào Thùng rác chưa xong. Đóng app bây giờ sẽ dừng xoá sau file đang xử lý: các file đã xoá vẫn nằm trong Thùng rác Windows (khôi phục được), các bản còn lại giữ nguyên – lần sau dọn tiếp.',
+    ok: 'Dừng xoá và đóng', cancel: 'Tiếp tục dọn', danger: true,
+  } : {
     title: 'Đang quét thư viện',
     body: 'Quét chưa xong. Đóng app bây giờ sẽ dừng quét – phần đã quét được giữ lại, lần sau quét tiếp phần còn lại. Ổ chậm có thể cần vài giây để dừng hẳn.',
     ok: 'Dừng quét và đóng', cancel: 'Tiếp tục quét', danger: true,
   });
   closeAsked = false;
   if (!ok) return;
-  S.quitting = true; renderScanBox();
+  S.quitting = true; renderScanBox(); paintClean();
   call('quit_app').catch(fail);
 });
 
@@ -225,7 +234,7 @@ api.listen('scan-health', (e) => { if (!S.scanning) return; S.health = e.payload
 
 api.listen('scan-done', async (e) => {
   const stalled = S.health?.stalled;
-  S.scanning = false; S.progress = null; S.health = null;
+  S.scanning = false; S.progress = null; S.health = null; S.autoSuspectsDone = false; // quét mới có thể sinh nhóm nghi trùng mới cần tự dọn
   const p = e.payload;
   // Treo: hiện hộp thoại (không chỉ toast) để người dùng thấy rõ bước / file nào và chép lại được.
   if (!p.ok && stalled) modal({ title: 'Đã dừng quét vì bị treo', body: p.message, cancel: null, ok: 'Đã hiểu' });
@@ -235,6 +244,90 @@ api.listen('scan-done', async (e) => {
   store('bannerSeen', 0);
   await refreshOverview();
   render();
+});
+
+// ------------------------------------------------------------------ dọn trùng chạy nền (hộp tiến trình)
+// Lõi gửi `clean-progress` ({ phase: 'trash' | 'refresh', done, total }), `clean-health` mỗi giây (giám sát treo)
+// và đúng một `clean-done`. Hộp này không đóng được bằng Esc / bấm ra ngoài – chỉ "Dừng" hoặc khi xong.
+const CL = { el: null, progress: null, health: null, stopping: false, kind: 'exact' };
+const CL_TITLE = { exact: 'Đang dọn trùng chắc chắn', suspects: 'Đang tự dọn nghi trùng ≥85%' };
+
+function openCleanModal() {
+  if (CL.el) return;
+  Object.assign(CL, { progress: null, health: null, stopping: false });
+  // Dựng một lần, mỗi sự kiện chỉ cập nhật chữ / thanh / nút tại chỗ – vẽ lại cả hộp thì nút "Dừng" bị thay giữa
+  // lúc bấm (tiến trình tới mỗi file) và cú bấm bị mất.
+  CL.txt = h('div', { class: 'txt' });
+  CL.bar = h('i');
+  CL.healthBox = h('div');
+  CL.stop = h('button', { class: 'btn danger', onclick: stopClean }, 'Dừng');
+  const title = CL_TITLE[CL.kind] || CL_TITLE.exact;
+  CL.el = h('div', { class: 'modal-back' }, h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+    h('h3', {}, title),
+    h('p', {}, 'Bản giữ lại được kiểm tra còn nguyên trước mỗi lần xoá. Dừng giữa chừng an toàn: file đã xoá nằm trong Thùng rác Windows (khôi phục được), phần còn lại giữ nguyên.'),
+    CL.txt, h('div', { class: 'progress' }, CL.bar), CL.healthBox,
+    h('div', { class: 'actions', style: 'margin-top:14px' }, CL.stop)));
+  $('#modal-root').append(CL.el);
+  paintClean();
+}
+
+function paintClean() {
+  if (!CL.el) return;
+  const p = CL.progress, n = (x) => (x || 0).toLocaleString('vi-VN');
+  let text = 'Đang chuẩn bị…', pct = null;
+  if (S.quitting) text = 'Đang dừng xoá để đóng app…';
+  else if (CL.stopping) text = 'Đang dừng sau file hiện tại…';
+  else if (p?.phase === 'trash') { text = `Đã đưa ${n(p.done)} / ${n(p.total)} bản thừa vào Thùng rác`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
+  else if (p?.phase === 'suspect_hash') { text = `Đang tính độ tin cậy nghi trùng: ${n(p.done)} / ${n(p.total)} file`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
+  else if (p?.phase === 'refresh') text = 'Đã xoá xong – đang cập nhật số liệu trùng / nghi trùng…';
+  CL.txt.textContent = text;
+  CL.bar.className = pct == null ? '' : 'det';
+  CL.bar.style.width = pct == null ? '' : pct + '%';
+  CL.healthBox.replaceChildren(...[healthLine(CL.health)].filter(Boolean));
+  CL.stop.disabled = CL.stopping || S.quitting || p?.phase === 'refresh';
+  CL.stop.textContent = CL.stopping || S.quitting ? 'Đang dừng…' : 'Dừng';
+}
+
+async function stopClean() {
+  CL.stopping = true; paintClean();
+  try { await call('cancel_clean'); } catch (e) { fail(e); }
+}
+
+/** Bắt đầu dọn các nhóm (full_hash) đã chọn; `keep`: full_hash → id bản người dùng chọn giữ. */
+async function startClean(hashes, keep) {
+  CL.kind = 'exact';
+  openCleanModal(); // mở trước: sự kiện tiến trình đầu tiên có thể tới trước khi lệnh trả về
+  try { await call('start_clean_exact', { hashes, keep }); } catch (e) { closeCleanModal(); fail(e); }
+}
+
+function closeCleanModal() { CL.el?.remove(); CL.el = null; }
+
+/** Tự dọn các nhóm nghi trùng có độ tin cậy ≥ 85% (giữ bản đề xuất, còn lại vào Thùng rác). */
+async function startCleanSuspects() {
+  CL.kind = 'suspects';
+  openCleanModal();
+  try { await call('start_clean_suspects'); } catch (e) { closeCleanModal(); fail(e); }
+}
+
+api.listen('clean-progress', (e) => { if (!CL.el) openCleanModal(); CL.progress = e.payload; CL.health = null; paintClean(); });
+api.listen('clean-health', (e) => { if (!CL.el) return; CL.health = e.payload; paintClean(); });
+api.listen('clean-done', async (e) => {
+  const stalled = CL.health?.stalled;
+  closeCleanModal();
+  if (S.quitting) return; // app đang tự thoát
+  const p = e.payload;
+  const kind = CL.kind;
+  if (kind === 'suspects') S.autoSuspectsDone = true; // đã thử tự dọn trong phiên này – không tự chạy lại liên tục
+  if (!p.ok && stalled) modal({ title: 'Đã dừng dọn trùng vì bị treo', body: p.message, cancel: null, ok: 'Đã hiểu' });
+  else if (!p.ok) fail('Dọn trùng lỗi: ' + p.message);
+  else {
+    const r = p.report;
+    if (r.cancelled) toast(`Đã dừng: ${r.trashed} bản vào Thùng rác (${fmtBytes(r.freed_bytes)}), các bản còn lại giữ nguyên.`, { action: { label: 'Mở Thùng rác', run: () => call('open_recycle_bin') }, ms: 9000 });
+    else reportTrash(r);
+    if (r.cancelled && (r.failures.length || r.aborted)) reportTrash({ ...r, trashed: 0 });
+  }
+  await refreshOverview().catch(fail);
+  if (S.view.name === 'dupes' || S.view.name === 'suspects') render();
 });
 
 // ------------------------------------------------------------------ điều hướng
@@ -590,6 +683,7 @@ function itemMenu(x, y, it) {
       { label: `Đọc (${it.formats[0].toUpperCase()})`, run: () => openItem(it) },
       { label: `Xem ${it.formats.length} định dạng (${fmtList(it)})`, run: () => openWork(it) },
       { label: 'Hiện trong thư mục', run: () => call('reveal', { id: it.cover_book_id }).catch(fail) },
+      n <= 1 ? { label: 'Sửa tiêu đề…', run: () => editTitle(it) } : null,
       '-',
       ...sendItems(n),
       { label: 'Đánh dấu đã đọc', run: () => markRead('read') },
@@ -613,6 +707,7 @@ function itemMenu(x, y, it) {
     { label: 'Mở bằng ứng dụng mặc định', run: () => openExternal(it.id) },
     { label: 'Hiện trong thư mục', run: () => call('reveal', { id: it.id }).catch(fail) },
     { label: 'Sao chép đường dẫn', run: () => navigator.clipboard.writeText(it.path).then(() => toast('Đã sao chép đường dẫn')) },
+    n <= 1 && it.id > 0 ? { label: 'Sửa tiêu đề…', run: () => editTitle(it) } : null,
     '-',
     ...sendItems(n),
     it.on_ipad ? { label: 'Có trên thiết bị nào?', run: () => showBookDevices(it) } : null,
@@ -622,6 +717,66 @@ function itemMenu(x, y, it) {
     { label: n > 1 ? `Chuyển ${n} sách vào thư mục…` : 'Chuyển vào thư mục…', run: moveSelection },
     '-', { label: n > 1 ? `Xoá ${n} sách vào Thùng rác…` : 'Xoá vào Thùng rác…', danger: true, run: deleteSelection },
   ].filter(Boolean));
+}
+
+// ------------------------------------------------------------------ sửa tiêu đề
+const CONTENT_FORMATS = new Set(['epub', 'fb2']); // ghi được tiêu đề vào nội dung (retitle.rs)
+
+/** Tên file (không đuôi) theo tiêu đề – khớp `retitle::file_stem_for` phía Rust (chỉ để xem trước). */
+function fileStemFor(t) {
+  let s = '';
+  for (const c of t) s += c === ':' ? ' -' : '/\\|'.includes(c) ? '-' : c === '"' ? "'" : '?*<>'.includes(c) ? '' : c < ' ' ? ' ' : c;
+  s = [...s.split(/\s+/).filter(Boolean).join(' ')].slice(0, 150).join('').replace(/^[. ]+|[. ]+$/g, '');
+  return /^(con|prn|aux|nul|com\d|lpt\d)$/i.test(s.split('.')[0].trim()) ? s + '_' : s;
+}
+const extOf = (name) => { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i) : ''; };
+
+/** Sửa tiêu đề một cuốn, hoặc mọi định dạng của một tác phẩm (ô "n định dạng"). */
+async function editTitle(it) {
+  if (S.scanning || CL.el) return toast('Đang quét hoặc dọn trùng – đợi xong rồi sửa tiêu đề.');
+  let books;
+  try { books = it.kind === 'series' && it.work ? (await call('query', { q: { work: it.work, not_worth: inNotWorth(), limit: 1000 } })).items : [it]; } catch (e) { return fail(e); }
+  if (!books.length) return;
+  const cur = it.kind === 'series' ? it.series : it.title;
+  const writable = books.filter((b) => CONTENT_FORMATS.has(b.format) && !b.drm);
+  const input = h('input', { type: 'text', class: 'text-input', value: cur, 'aria-label': 'Tiêu đề mới' });
+  const rename = h('input', { type: 'checkbox', checked: true });
+  const content = h('input', { type: 'checkbox', checked: writable.length > 0, disabled: !writable.length });
+  const preview = h('div', { class: 'small muted', style: 'margin-top:6px;word-break:break-all' });
+  const paint = () => {
+    const stem = fileStemFor(input.value.trim());
+    preview.textContent = !rename.checked ? '' : stem ? 'Tên file mới: ' + books.map((b) => stem + extOf(b.file_name)).join(', ') : 'Tiêu đề không dùng được làm tên file – giữ tên cũ';
+  };
+  input.addEventListener('input', paint); rename.addEventListener('change', paint);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.closest('.modal')?.querySelector('.actions .primary')?.click(); } });
+  paint();
+  const fmts = [...new Set(books.map((b) => b.format.toUpperCase()))].join(', ');
+  const contentNote = writable.length
+    ? `EPUB / FB2: sửa ngay trong sách (đọc lại để kiểm tra trước khi thay), bản gốc vào Thùng rác Windows – khôi phục được.${writable.length < books.length ? ' Định dạng khác chỉ sửa trong thư viện.' : ''}`
+    : `${fmts} chưa ghi được vào nội dung – chỉ sửa trong thư viện (giữ qua các lần quét) và tên file.`;
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+  const ok = await modal({
+    title: books.length > 1 ? `Sửa tiêu đề (${books.length} định dạng)` : 'Sửa tiêu đề',
+    ok: 'Lưu',
+    content: h('div', { style: 'margin-bottom:16px' }, input, preview,
+      h('label', { class: 'check' }, rename, h('span', {}, 'Đổi tên file theo tiêu đề mới')),
+      h('label', { class: 'check' }, content, h('span', {}, 'Ghi tiêu đề vào nội dung sách', h('div', { class: 'small muted' }, contentNote))),
+      h('p', { class: 'small muted', style: 'margin:10px 0 0' }, 'Tiêu đề mới được dùng ngay cho tìm kiếm và so nghi trùng; lần quét sau không ghi đè.')),
+  });
+  if (!ok) return;
+  const title = input.value.trim();
+  if (!title) return toast('Tiêu đề không được để trống.', { error: true });
+  try {
+    const r = await call('retitle_books', { ids: books.map((b) => b.id), title, renameFile: rename.checked, writeContent: content.checked });
+    const renamed = r.done.filter((d) => d.renamed).length, written = r.done.filter((d) => d.content_written).length;
+    const bits = [renamed ? `đổi tên ${renamed} file` : null, written ? `ghi vào nội dung ${written} file` : null].filter(Boolean);
+    if (r.done.length) toast(`Đã sửa tiêu đề thành “${r.title}”${bits.length ? ' · ' + bits.join(', ') : ''}.`, written ? { action: { label: 'Mở Thùng rác', run: () => call('open_recycle_bin') } } : {});
+    const notes = [...r.failures.map((f) => [f.path, f.message]), ...r.done.filter((d) => d.note).map((d) => [d.new_path, d.note])];
+    if (notes.length) modal({ title: r.failures.length ? `${r.failures.length} file không sửa được` : 'Lưu ý', cancel: null, ok: 'Đóng',
+      content: h('div', { style: 'max-height:240px;overflow:auto;margin-bottom:16px' }, ...notes.map(([p, m]) => h('div', { class: 'path', style: 'margin-bottom:6px' }, p, h('br'), h('span', { class: 'muted' }, m)))) });
+  } catch (e) { return fail(e); }
+  await refreshOverview().catch(fail);
+  if (S.view.name === 'series') render(); else await refreshKeepScroll();
 }
 
 /** Mục menu "Gửi sang <thiết bị>": một mục cho mỗi iPad/iPhone đã ghép, thêm "tất cả" khi có từ hai máy. */
@@ -886,12 +1041,8 @@ async function renderDupes() {
   };
   const clean = async (sel) => {
     const files = sel.reduce((s, g) => s + g.others.length, 0);
-    if (!(await modal({ title: `Dọn ${files} bản trùng?`, body: 'Bản giữ lại được kiểm tra còn nguyên trước khi xoá. Các bản thừa vào Thùng rác Windows.', ok: 'Dọn', danger: true }))) return;
-    try {
-      reportTrash(await call('clean_exact', { hashes: sel.map((g) => g.full_hash), keep: Object.fromEntries([...keep].filter(([h]) => sel.some((g) => g.full_hash === h))) }));
-    } catch (e) { fail(e); }
-    await refreshOverview();
-    render();
+    if (!(await modal({ title: `Dọn ${files} bản trùng?`, body: 'Bản giữ lại được kiểm tra còn nguyên trước khi xoá. Các bản thừa vào Thùng rác Windows. Nhiều file có thể mất vài phút – có thể dừng giữa chừng.', ok: 'Dọn', danger: true }))) return;
+    await startClean(sel.map((g) => g.full_hash), Object.fromEntries([...keep].filter(([h]) => sel.some((g) => g.full_hash === h))));
   };
   for (const g of groups) {
     const members = [g.keeper, ...g.others];
@@ -919,12 +1070,18 @@ async function renderDupes() {
 
 // ------------------------------------------------------------------ nghi trùng (E4-06, E4-07)
 let suspectKeys = null;
+const AUTO_SUSPECT = 85; // = dedupe::AUTO_SUSPECT_CONFIDENCE
 async function renderSuspects() {
-  toolbar('Nghi trùng', 'cùng tên/ISBN, nội dung khác – cần bạn duyệt');
+  toolbar('Nghi trùng', `cùng tên/ISBN, nội dung khác – nhóm tin cậy ≥${AUTO_SUSPECT}% được tự dọn (trừ nhóm có sách đã xoá trước đây), còn lại cần bạn duyệt`);
   view.replaceChildren(h('div', { class: 'pad muted' }, 'Đang tải…'));
   let groups;
   try { groups = await call('suspect_groups'); } catch (e) { return fail(e); }
   if ((stats()?.suspect_groups || 0) !== groups.length) refreshOverview().catch(fail);
+  // Nhóm chắc chắn cao: tự dọn ở nền (một lần mỗi phiên, để lỗi / bấm Dừng không bị chạy lại liên tục).
+  const auto = groups.filter((g) => g.confidence >= AUTO_SUSPECT && !g.has_deleted); // có mục "đã xoá": luôn duyệt tay
+  if (auto.length && !S.autoSuspectsDone && !S.scanning && !CL.el) { startCleanSuspects(); }
+  // Còn lại: duyệt tay, nhóm dễ (tin cậy cao) trước.
+  groups.sort((a, b) => b.confidence - a.confidence);
   let i = 0;
   const host = h('div', { class: 'pad' });
   view.replaceChildren(host);
@@ -934,11 +1091,24 @@ async function renderSuspects() {
     groups.splice(i, 1); i = Math.min(i, groups.length - 1); paint(); refreshOverview().catch(fail);
     toast(decision === 'keep_both' ? 'Đã ghi “Giữ tất cả”.' : 'Đã ghi “Không trùng”.');
   };
+  // Chọn giữ một bản: xoá ngay các bản còn lại (vào Thùng rác Windows – khôi phục được), không hỏi lại, sang nhóm kế.
+  let busy = false;
+  // Mục "đã xoá trước đây" (id âm) không còn file: chọn nó = xoá mọi bản đang có trong nhóm; chọn giữ một bản đang có
+  // thì ghi "Giữ tất cả" với các mục đã xoá để nhóm không hiện lại.
   const keepOnly = async (b) => {
-    const g = groups[i], drop = g.members.filter((x) => x.id !== b.id);
-    if (!(await modal({ title: `Giữ “${b.file_name}”?`, body: `${drop.length} bản còn lại (${fmtBytes(drop.reduce((s, x) => s + x.size, 0))}) sẽ vào Thùng rác.`, ok: 'Giữ bản này', danger: true }))) return;
-    try { reportTrash(await call('trash_books', { ids: drop.map((x) => x.id) })); } catch (e) { return fail(e); }
-    groups.splice(i, 1); i = Math.min(i, groups.length - 1); paint(); refreshOverview();
+    if (busy) return;
+    const g = groups[i], drop = g.members.filter((x) => x.id !== b.id && x.id > 0), ghosts = g.members.filter((x) => x.id < 0);
+    busy = true;
+    groups.splice(i, 1); i = Math.max(0, Math.min(i, groups.length - 1)); paint();
+    try {
+      const r = drop.length ? await call('trash_books', { ids: drop.map((x) => x.id) }) : { trashed: 0, freed_bytes: 0, failures: [] };
+      if (b.id > 0 && ghosts.length) await call('decide', { ids: [b.id, ...ghosts.map((x) => x.id)], decision: 'keep_both' });
+      const kept = b.id < 0 ? 'Giữ trạng thái đã xoá' : `Đã giữ “${b.file_name}”`;
+      if (r.failures.length || r.aborted) reportTrash(r);
+      else toast(`${kept}, ${r.trashed} bản vào Thùng rác (${fmtBytes(r.freed_bytes)}).`, { action: { label: 'Mở Thùng rác', run: () => call('open_recycle_bin') } });
+    } catch (e) { fail(e); groups.splice(i, 0, g); paint(); }
+    finally { busy = false; }
+    refreshOverview().catch(fail);
   };
   const paint = () => {
     if (!groups.length) {
@@ -948,21 +1118,31 @@ async function renderSuspects() {
     }
     const g = groups[i];
     host.replaceChildren(
-      h('div', { class: 'section-title' }, `Nhóm ${i + 1}/${groups.length}`, h('span', { class: 'tag warn' }, g.reason)),
-      h('div', { class: 'compare' }, ...g.members.map((b, k) => h('div', { class: 'cmp-card' },
+      h('div', { class: 'section-title' }, `Nhóm ${i + 1}/${groups.length}`, h('span', { class: 'tag warn' }, g.reason),
+        h('span', { class: 'tag ' + (g.confidence >= 70 ? 'ok' : 'bad'), title: 'Độ tin cậy là cùng một cuốn (ISBN, tên, tác giả, dung lượng, số trang)' }, `Tin cậy ${g.confidence}%`)),
+      h('div', { class: 'compare' }, ...g.members.map((b, k) => b.id < 0
+        ? h('div', { class: 'cmp-card deleted' },
+          h('div', { class: 'cv' }, coverFor(b)),
+          h('div', {}, h('span', { class: 'tag bad' }, 'Đã xoá trước đây'), h('div', {}, h('b', {}, b.title)), h('div', { class: 'muted small' }, b.authors || '—')),
+          h('dl', {}, ...[['Định dạng', b.format.toUpperCase()], ['Dung lượng', fmtBytes(b.size)], ['Số trang', b.page_count ?? '—'], ['ISBN', b.isbn || '—'],
+            ['Chỗ cũ', b.rel_path]].flatMap(([a, v]) => [h('dt', {}, a), h('dd', {}, String(v))])),
+          h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
+            h('button', { class: 'btn small', title: 'Bạn đã xoá cuốn này: đưa các bản đang có trong nhóm vào Thùng rác', onclick: () => keepOnly(b) }, 'Vẫn xoá bản mới', k < 9 ? h('span', { class: 'kbd', style: 'margin-left:6px' }, String(k + 1)) : null)))
+        : h('div', { class: 'cmp-card' },
         h('div', { class: 'cv' }, coverFor(b)),
         h('div', {}, h('b', {}, b.title), h('div', { class: 'muted small' }, b.authors || '—')),
         h('dl', {}, ...[['Định dạng', b.format.toUpperCase()], ['Dung lượng', fmtBytes(b.size)], ['Số trang', b.page_count ?? '—'], ['ISBN', b.isbn || '—'],
           ['Thư mục', b.rel_path], ['Sửa lúc', fmtDate(Math.floor(b.mtime / 1000))]].flatMap(([a, v]) => [h('dt', {}, a), h('dd', {}, String(v))])),
         h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
-          h('button', { class: 'btn small primary', onclick: () => keepOnly(b) }, `Giữ bản này`, k < 9 ? h('span', { class: 'kbd', style: 'margin-left:6px;color:#fff;border-color:#fff8' }, String(k + 1)) : null),
+          h('button', { class: 'btn small ' + (b.id === g.keeper_id ? 'primary' : ''), title: b.id === g.keeper_id ? 'Bản đề xuất giữ (nhiều trang / dung lượng lớn hơn)' : '', onclick: () => keepOnly(b) }, b.id === g.keeper_id ? 'Giữ bản này ★' : 'Giữ bản này', k < 9 ? h('span', { class: 'kbd', style: 'margin-left:6px' + (b.id === g.keeper_id ? ';color:#fff;border-color:#fff8' : '') }, String(k + 1)) : null),
           h('button', { class: 'btn small', title: 'Mở trong trình đọc để so sánh', onclick: () => read(b.id) }, 'Mở thử'))))),
       h('div', { style: 'display:flex;gap:8px;margin-top:18px;flex-wrap:wrap;align-items:center' },
         h('button', { class: 'btn', disabled: i === 0, onclick: () => { i--; paint(); } }, '← Trước'),
         h('button', { class: 'btn', disabled: i >= groups.length - 1, onclick: () => { i++; paint(); } }, 'Sau →'),
         h('span', { style: 'flex:1' }),
         h('button', { class: 'btn', onclick: () => decide('not_duplicate') }, 'Không trùng ', h('span', { class: 'kbd' }, 'N')),
-        h('button', { class: 'btn', onclick: () => decide('keep_both') }, 'Giữ tất cả ', h('span', { class: 'kbd' }, 'K'))));
+        h('button', { class: 'btn', onclick: () => decide('keep_both') }, 'Giữ tất cả ', h('span', { class: 'kbd' }, 'K')),
+        h('button', { class: 'btn primary', title: 'Giữ bản đề xuất ★, các bản còn lại vào Thùng rác', onclick: () => keepOnly(g.members.find((x) => x.id === g.keeper_id) || g.members[0]) }, 'Giữ bản ★ ', h('span', { class: 'kbd', style: 'color:#fff;border-color:#fff8' }, 'Enter'))));
   };
   paint();
   suspectKeys = (e) => {
@@ -972,6 +1152,7 @@ async function renderSuspects() {
     else if (e.key.toLowerCase() === 'n') decide('not_duplicate');
     else if (e.key.toLowerCase() === 'k') decide('keep_both');
     else if (/^[1-9]$/.test(e.key) && groups[i].members[+e.key - 1]) keepOnly(groups[i].members[+e.key - 1]);
+    else if (e.key === 'Enter') { e.preventDefault(); keepOnly(groups[i].members.find((x) => x.id === groups[i].keeper_id) || groups[i].members[0]); }
   };
 }
 
@@ -1026,7 +1207,7 @@ async function renderActivity() {
   toolbar('Hoạt động', 'nhật ký xoá / di chuyển / hoàn tác', h('button', { class: 'btn', onclick: () => call('open_recycle_bin').catch(fail) }, 'Mở Thùng rác'));
   let batches, reports;
   try { [batches, reports] = await Promise.all([call('list_batches'), call('report_history')]); } catch (e) { return fail(e); }
-  const kinds = { dedupe: 'Dọn trùng', trash: 'Xoá', classify: 'Phân loại', manual: 'Chuyển tay' };
+  const kinds = { dedupe: 'Dọn trùng', trash: 'Xoá', classify: 'Phân loại', manual: 'Chuyển tay', retitle: 'Sửa tiêu đề' };
   const host = h('div', { class: 'pad' });
   if (!batches.length) host.append(h('p', { class: 'muted' }, 'Chưa có thao tác nào.'));
   for (const b of batches) {
@@ -1189,6 +1370,8 @@ function renderSettings() {
       if (e.target.checked) modal({ title: 'Bật tự phân loại?', body: 'Mỗi lần quét, sách trong hộp thư đến (kể cả thư mục kiểu Calibre) sẽ được đọc tag, chuyển vào thư mục thể loại — tạo thư mục mới nếu cần, sách chưa chắc vào “Khác” — rồi mọi file không phải sách (ảnh, âm thanh, video, .opf…) và thư mục con thừa được đưa vào Thùng rác. Truyện tranh và file .zip/.rar được giữ nguyên. Nhật ký di chuyển: triage-journal.jsonl trong thư mục dữ liệu app.', ok: 'Đã hiểu', cancel: 'Tắt lại' })
         .then((ok) => { if (!ok) { c.auto_triage = false; e.target.checked = false; } });
     }), 'Mặc định bật. Xem trước bằng lệnh: librarian triage.'),
+    field('Sách đã xoá', chk('auto_reject_deleted', 'Tải lại đúng cuốn đã xoá thì tự đưa vào Thùng rác'),
+      'Mặc định bật. App nhớ dung lượng + mã băm của sách bạn đã xoá (kể cả sau khi dọn sạch Thùng rác Windows). Bản y hệt tải về lần sau bị loại khi quét; bản gần giống hiện ở “Nghi trùng” để bạn duyệt. Khôi phục từ Thùng rác thì app thôi nhớ cuốn đó.'),
     field('Giờ quét ngầm', h('input', { type: 'text', value: c.scan_time, onchange: (e) => { c.scan_time = e.target.value; } }), 'HH:MM – đăng ký Task Scheduler sẽ có ở M6.'),
     field('Ngưỡng tin cậy cao', num('classify_high', 1, 100), 'Đề xuất từ mức này trở lên được tick sẵn.'),
     field('Ngưỡng trung bình', num('classify_medium', 1, 100), 'Dưới mức này: đưa vào “Cần làm tay”.'),

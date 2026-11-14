@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub trait Trasher {
     /// Đưa file vào Thùng rác. Lỗi = không chắc file đã vào Thùng rác.
@@ -36,7 +37,12 @@ pub struct TrashReport {
     pub failures: Vec<TrashFailure>,
     /// Lô bị dừng giữa chừng vì không chắc file đã vào Thùng rác (E5-02).
     pub aborted: Option<String>,
+    /// Người dùng bấm dừng (hoặc đóng app) giữa chừng: các file đã xoá vẫn được ghi nhật ký, phần còn lại giữ nguyên.
+    pub cancelled: bool,
 }
+
+/// Bước báo tiến trình khi đưa từng file vào Thùng rác (x / y file).
+pub const TRASH_PHASE: &str = "trash";
 
 /// Một mục cần xoá; `expect` = (size, mtime) file phải còn khớp (E5-04), `keeper` = bản giữ phải còn nguyên.
 pub struct TrashItem<'a> {
@@ -61,12 +67,40 @@ pub fn trash_items(
     kind: &str,
     items: &[TrashItem],
 ) -> Result<TrashReport> {
+    trash_items_with(conn, cfg, trasher, kind, items, None, None)
+}
+
+/// Như [`trash_items`], báo tiến trình [`TRASH_PHASE`] x / y qua `on` và dừng được bằng `cancel` (kiểm tra trước
+/// mỗi file). Mỗi file xoá xong được ghi DB ngay, nên dừng giữa chừng / tắt máy không làm sai lệch thư viện.
+pub fn trash_items_with(
+    conn: &Connection,
+    cfg: &Config,
+    trasher: &dyn Trasher,
+    kind: &str,
+    items: &[TrashItem],
+    cancel: Option<&AtomicBool>,
+    on: Option<crate::OnStep>,
+) -> Result<TrashReport> {
     if cfg.read_only {
         return Err(Error::ReadOnly);
     }
     let batch = db::new_batch(conn, kind, None)?;
     let mut rep = TrashReport { batch_id: batch, ..Default::default() };
-    for it in items {
+    let total = items.len();
+    let step = |done: usize| {
+        if let Some(f) = on {
+            f(crate::Step { phase: TRASH_PHASE, done, total });
+        }
+    };
+    step(0);
+    for (i, it) in items.iter().enumerate() {
+        if i > 0 {
+            step(i);
+        }
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            rep.cancelled = true;
+            break;
+        }
         let b = it.book;
         let p = Path::new(&b.path);
         let fail = |rep: &mut TrashReport, msg: String| -> Result<()> {
@@ -91,9 +125,14 @@ pub fn trash_items(
             continue;
         }
         crate::progress::working_on(p);
+        // Sổ sách đã xoá: lấy băm nhanh TRƯỚC khi file biến mất (rẻ: dung lượng + 3 đoạn 64 KB).
+        let quick = if crate::deleted::remembers(kind) { quick_of(conn, b) } else { None };
         match trasher.trash(p) {
             Ok(()) => {
                 db::set_status(conn, b.id, "trashed")?;
+                if crate::deleted::remembers(kind) {
+                    crate::deleted::record(conn, b, quick.as_deref(), kind)?;
+                }
                 db::log_op(
                     conn,
                     batch,
@@ -122,7 +161,24 @@ pub fn trash_items(
             }
         }
     }
+    if !rep.cancelled && rep.aborted.is_none() {
+        step(total);
+    }
     Ok(rep)
+}
+
+/// Băm nhanh của file sắp xoá (dùng băm đã lưu nếu còn khớp), lưu lại vào bản ghi để khôi phục từ Thùng rác nhận
+/// ra được đúng mục trong sổ.
+fn quick_of(conn: &Connection, b: &Book) -> Option<String> {
+    if let Some(q) = b.quick_hash.as_ref().filter(|_| b.hash_size == Some(b.size) && b.hash_mtime == Some(b.mtime)) {
+        return Some(q.clone());
+    }
+    let q = crate::hash::quick_hash(Path::new(&b.path)).ok()?;
+    let _ = conn.execute(
+        "UPDATE books SET quick_hash = ?2, full_hash = NULL, hash_size = ?3, hash_mtime = ?4 WHERE id = ?1",
+        rusqlite::params![b.id, q, b.size, b.mtime],
+    );
+    Some(q)
 }
 
 /// Xoá thẳng các sách được chọn vào Thùng rác (D7, E5-03).
