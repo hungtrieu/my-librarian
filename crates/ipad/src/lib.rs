@@ -1,6 +1,8 @@
 //! My Librarian cho iPad / iPhone (Tauri 2 iOS) và điện thoại Android (Tauri 2 Android). Lệnh `lib_*` bọc `librarian_core::ipad_lib`; giao thức `book://`
 //! phục vụ nội dung sách cho trình đọc dùng chung (`reader.js`) giống app Windows.
 
+use librarian_core::covers::CoverCache;
+use librarian_core::formats::Format;
 use librarian_core::ipad_lib::{self, Bookmark, IpadBook, Item, ReaderInfo, Removed, Sort, Usage};
 use librarian_core::reader::ComicSource;
 use librarian_core::rusqlite::Connection;
@@ -29,6 +31,10 @@ struct Lib {
     /// Android: `Books` trong vùng dữ liệu riêng của app (không cần quyền bộ nhớ).
     books_dir: PathBuf,
     comic: Mutex<Option<(i64, Arc<ComicSource>)>>,
+    /// Thư mục dữ liệu app: bìa thu nhỏ cache ở `<data>/covers`.
+    data_dir: PathBuf,
+    /// Chỉ trích một bìa một lúc để điện thoại không phình RAM khi lưới mở nhiều ô cùng lúc.
+    cover_gate: Mutex<()>,
 }
 
 impl Lib {
@@ -580,6 +586,21 @@ fn handle_book(lib: &Lib, req: &tauri::http::Request<Vec<u8>>) -> Resp {
             let range = req.headers().get("range").and_then(|v| v.to_str().ok());
             serve_file(&path, &b.format, range)
         }
+        Some("cover") => {
+            let Some(f) = Format::from_ext(&b.format) else {
+                return fail(404, "Không có bìa");
+            };
+            let _gate = lib.cover_gate.lock();
+            // Khoá cache theo (id, size): sách thay file thì bìa tự làm mới.
+            match CoverCache::new(&lib.data_dir).get(b.id, &path, f, b.size, 0) {
+                Ok(Some(jpg)) => {
+                    let mut r = reply(200, "image/jpeg", jpg);
+                    r.headers_mut().insert("Cache-Control", "max-age=86400".parse().unwrap());
+                    r
+                }
+                _ => fail(404, "Không có bìa"),
+            }
+        }
         Some("pages") => match comic(lib, &b, &path) {
             Ok(s) => reply(200, "application/json", format!("{{\"count\":{}}}", s.page_count()).into_bytes()),
             Err(e) => fail(422, &e.to_string()),
@@ -639,6 +660,8 @@ pub fn run() {
             cancel: Arc::new(AtomicBool::new(false)),
             books_dir,
             comic: Mutex::new(None),
+            data_dir: data,
+            cover_gate: Mutex::new(()),
         });
         Ok(())
     })

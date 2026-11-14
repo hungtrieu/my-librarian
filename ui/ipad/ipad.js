@@ -51,7 +51,16 @@ function pressable(tap, hold) {
 }
 
 // ------------------------------------------------------------------ thẻ sách
-function cover(b) { return genCover(b.title || b.series, b.authors, b.format); }
+// Bìa thật (EPUB, MOBI/AZW, CBZ/CBR, FB2) trích từ file trên thiết bị qua book://<id>/cover; PDF/TXT hoặc sách không có
+// bìa dùng bìa tự sinh, giống app Windows.
+const COVER_FORMATS = new Set(['epub', 'mobi', 'azw', 'azw3', 'cbz', 'cbr', 'fb2']);
+function cover(b, { id = b.id, format = b.format, title = b.title || b.series, authors = b.authors } = {}) {
+  const gen = () => genCover(title, authors, format);
+  if (!TAURI || id == null || !COVER_FORMATS.has(format)) return gen();
+  const img = h('img', { class: 'cover', src: `${bookBase({ id })}cover`, alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' });
+  img.onerror = () => img.replaceWith(gen());
+  return img;
+}
 const bar = (f) => (f > 0 && f < 1 ? h('div', { class: 'pbar', 'aria-hidden': 'true' }, h('i', { style: `width:${pct(f)}` })) : null);
 
 function bookCard(b, { showVol = false } = {}) {
@@ -64,7 +73,7 @@ function bookCard(b, { showVol = false } = {}) {
 
 function seriesTile(s) {
   return h('button', { class: 'tile series', ...pressable(() => go({ name: 'series', series: s.series, notWorth: S.tab === 'not_worth' }), () => seriesSheet(s)), 'aria-label': `Bộ ${s.series}` },
-    h('div', { class: 'cv sstack' }, h('div', { class: 'under u2' }), h('div', { class: 'under u1' }), h('div', { class: 'cvtop' }, cover({ title: s.series, authors: `${s.volumes} tập`, format: '' })),
+    h('div', { class: 'cv sstack' }, h('div', { class: 'under u2' }), h('div', { class: 'under u1' }), h('div', { class: 'cvtop' }, cover(s, { id: s.cover_book_id, format: s.cover_format, title: s.series, authors: `${s.volumes} tập` })),
       h('span', { class: 'vbadge' }, `${s.read}/${s.volumes}`)),
     h('div', { class: 'tt' }, s.series),
     h('div', { class: 'sub' }, s.read === s.volumes ? 'Đã đọc hết' : `${s.volumes} tập`));
@@ -93,7 +102,7 @@ function seriesRow(s) {
   const prog = h('div', { class: 'lprog' + (done ? ' done-txt' : '') }, done ? '✓ Đã đọc hết' :
     s.read ? [h('span', { class: 'lbar', 'aria-hidden': 'true' }, h('i', { style: `width:${Math.round((100 * s.read) / s.volumes)}%` })), h('span', {}, `${s.read}/${s.volumes}`)] : `${s.volumes} tập`);
   return h('button', { class: 'lrow', ...pressable(() => go({ name: 'series', series: s.series, notWorth: S.tab === 'not_worth' }), () => seriesSheet(s)), 'aria-label': `Bộ ${s.series}` },
-    h('div', { class: 'lcv sstack' }, h('div', { class: 'under u1' }), h('div', { class: 'cvtop' }, cover({ title: s.series, authors: '', format: '' }))),
+    h('div', { class: 'lcv sstack' }, h('div', { class: 'under u1' }), h('div', { class: 'cvtop' }, cover(s, { id: s.cover_book_id, format: s.cover_format, title: s.series, authors: '' }))),
     h('div', { class: 'lmain' },
       h('div', { class: 'ltt' }, s.series),
       h('div', { class: 'lsub' }, `Bộ · ${s.volumes} tập · ${fmtBytes(s.size)}`),

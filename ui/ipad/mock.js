@@ -46,7 +46,7 @@ function tile(series, notWorth = false) {
   const reading = v.find((b) => b.read_status === 'reading');
   const lastRead = v.filter((b) => b.read_status === 'read').pop();
   const next = reading || (lastRead ? v[v.indexOf(lastRead) + 1] : v[0]);
-  return { kind: 'series', series, volumes: v.length, read: v.filter((b) => b.read_status === 'read').length, cover_book_id: v[0].id, continue_book_id: next?.id ?? null,
+  return { kind: 'series', series, volumes: v.length, read: v.filter((b) => b.read_status === 'read').length, cover_book_id: v[0].id, cover_format: v[0].format, continue_book_id: next?.id ?? null,
     size: v.reduce((s, b) => s + b.size, 0), last_read_at: Math.max(0, ...v.map((b) => b.last_read_at || 0)) || null, added_at: Math.max(...v.map((b) => b.added_at)) };
 }
 

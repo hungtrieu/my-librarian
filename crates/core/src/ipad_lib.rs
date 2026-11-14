@@ -245,6 +245,8 @@ pub struct SeriesTile {
     pub volumes: usize,
     pub read: usize,
     pub cover_book_id: i64,
+    /// Định dạng của cuốn dùng làm bìa (để giao diện biết có trích bìa được không).
+    pub cover_format: String,
     /// Vol đang đọc dở, hoặc vol kế tiếp sau vol đọc xong cuối cùng ("Đọc tiếp").
     pub continue_book_id: Option<i64>,
     pub size: i64,
@@ -297,6 +299,7 @@ pub fn list(conn: &Connection, q: &Query) -> Result<Vec<Item>> {
             volumes: vols.len(),
             read: vols.iter().filter(|b| b.read_status == "read").count(),
             cover_book_id: vols[0].id,
+            cover_format: vols[0].format.clone(),
             continue_book_id,
             size: vols.iter().map(|b| b.size).sum(),
             last_read_at: vols.iter().filter_map(|b| b.last_read_at).max(),
