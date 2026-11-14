@@ -1,5 +1,7 @@
 # My Librarian
 
+![My Librarian trên Windows và điện thoại](docs/images/intro.png)
+
 Ứng dụng Windows quản lý kho ebook: quét, tìm nhanh không dấu, phát hiện trùng lặp an toàn, phân loại vào các thư mục thể loại có sẵn, quét ngầm hằng ngày. Yêu cầu: [docs/BRD.md](docs/BRD.md) · Backlog & tiến độ: [docs/BACKLOG.md](docs/BACKLOG.md).
 
 Hiện có **lõi Rust (`crates/core`), CLI (`crates/scanner-cli`) và app Tauri 2 (`crates/app` + `ui/`)** với giao diện thư viện kiểu Apple Books (M1–M4) và **trình đọc trong app** (M5): EPUB, MOBI/AZW/AZW3, FB2, CBZ, CBR (zip và RAR), PDF, TXT. DJVU vẫn mở bằng ứng dụng mặc định của Windows. Bộ cài .msi / NSIS do `scripts\ci.ps1` tạo trong `dist\`; trước khi dùng trên kho thật hãy làm theo [docs/TRIAL.md](docs/TRIAL.md). Số đo hiệu năng: [docs/PERF.md](docs/PERF.md) (`librarian bench`). Chi tiết: [docs/BACKLOG.md](docs/BACKLOG.md#10-tiến-độ).
