@@ -88,6 +88,26 @@ pub fn run_analysis_with(
             }
             Err(e) => tracing::warn!("tự phân loại lỗi: {e}"),
         }
+        // Thư viện cũ có `Khác` phẳng (hàng chục nghìn file, Explorer/Finder mở rất chậm): chia vào thư mục con.
+        if !is_cancelled() {
+            let opts = crate::triage::TriageOptions {
+                dry_run: false,
+                journal: Some(&journal),
+                cancel,
+                progress: on,
+                conn: Some(conn),
+            };
+            match crate::triage::bucket_other(cfg, &opts) {
+                Ok(r) if r.moved_files > 0 || !r.failures.is_empty() => {
+                    tracing::info!("chia nhỏ Khác: {} file chuyển, {} lỗi", r.moved_files, r.failures.len());
+                    for f in &r.failures {
+                        tracing::warn!("chia nhỏ Khác: {f}");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("chia nhỏ Khác lỗi: {e}"),
+            }
+        }
     }
     let scan_cb = |p: &scan::ScanProgress| {
         if let Some(f) = on {

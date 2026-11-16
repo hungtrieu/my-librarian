@@ -160,6 +160,7 @@ function progressText(p) {
     case 'triage_read': return { text: `Đang đọc hộp thư đến ${of('thư mục')}`, pct };
     case 'triage': return { text: p.total ? `Đang phân loại ${of('sách')}` : 'Đang liệt kê hộp thư đến…', pct };
     case 'triage_clean': return { text: `Đang dọn thư mục rỗng trong hộp thư đến ${of('mục')}`, pct };
+    case 'triage_other': return { text: `Đang chia nhỏ thư mục Khác ${of('sách')}`, pct };
     case 'hash_quick': return { text: `Đang băm nhanh ${of('file')}`, pct };
     case 'hash_full': return { text: `Đang băm đầy đủ ${of('file')}`, pct };
     case 'suspect_hash': return { text: `Đang băm bổ sung để tìm nghi trùng ${of('file')}`, pct };

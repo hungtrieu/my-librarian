@@ -115,14 +115,39 @@ pub fn apply_moves(conn: &Connection, cfg: &Config, reqs: &[MoveRequest], kind: 
             continue;
         }
         let src = PathBuf::from(&b.path);
-        if src.parent() == Some(r.target_dir.as_path()) {
+        // Chuyển vào `Khác` → vào thẳng ngăn của chữ cái đầu (`Khác\T\T-01\…`), không làm phẳng lại `Khác`.
+        let into_other = r.target_dir.parent() == Some(lib.as_path())
+            && r.target_dir.file_name().is_some_and(|n| crate::triage::is_other_dir(&n.to_string_lossy()));
+        if into_other {
+            let letter = crate::triage::other_bucket(&b.file_name);
+            let in_shelf = src.parent().is_some_and(|shelf| {
+                shelf.parent() == Some(r.target_dir.join(&letter).as_path())
+                    && shelf
+                        .file_name()
+                        .is_some_and(|n| crate::triage::other_shelf_number(&letter, &n.to_string_lossy()).is_some())
+            });
+            if in_shelf {
+                continue; // đã ở đúng chỗ
+            }
+        } else if src.parent() == Some(r.target_dir.as_path()) {
             continue; // đã ở đúng chỗ
         }
         if !src.is_file() {
             fail(&mut rep, "File nguồn không còn tồn tại".into())?;
             continue;
         }
-        let dst = unique_dest(&r.target_dir, &b.file_name);
+        let target = if into_other {
+            match crate::triage::Shelves::new(&r.target_dir, false).dir_for(&b.file_name) {
+                Ok(d) => d,
+                Err(e) => {
+                    fail(&mut rep, format!("Không tạo được ngăn trong {}: {e}", r.target_dir.display()))?;
+                    continue;
+                }
+            }
+        } else {
+            r.target_dir.clone()
+        };
+        let dst = unique_dest(&target, &b.file_name);
         match move_file(&src, &dst) {
             Ok(()) => {
                 let tx = crate::db::write_tx(conn)?;

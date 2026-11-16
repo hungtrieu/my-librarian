@@ -51,6 +51,8 @@ pub fn list_categories(cfg: &Config) -> Result<Vec<Category>> {
             key: fold(&name),
             series_dirs: subdirs(&path)
                 .into_iter()
+                // thư mục chia nhỏ `Khác` (`A`…`Z`, `0-9`, `#`) không phải thư mục bộ
+                .filter(|(n, _)| !(crate::triage::is_other_dir(&name) && crate::triage::is_other_bucket(n)))
                 .map(|(n, p)| SeriesDir { key: normalize_title(&n), name: n, path: p })
                 .filter(|s| s.key.chars().count() >= 2)
                 .collect(),

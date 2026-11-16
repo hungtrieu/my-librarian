@@ -87,7 +87,7 @@ fn redownloaded_deleted_book_is_trashed_on_next_scan() {
     e.trash.empty(); // dọn sạch Thùng rác Windows: sổ vẫn nhớ
 
     // Tải lại đúng file đó, tên khác, chỗ khác.
-    let again = e.books.join("Khác").join("mat-biec (1).epub");
+    let again = e.books.join("Khác").join("M").join("M-01").join("mat-biec (1).epub");
     std::fs::create_dir_all(again.parent().unwrap()).unwrap();
     std::fs::write(&again, &bytes).unwrap();
     let st = analyze(&e);
@@ -132,7 +132,7 @@ fn existing_books_are_never_rejected_and_exact_dedupe_is_not_remembered() {
     let e = setup();
     // Hai bản y hệt có sẵn → dọn trùng chắc chắn: nội dung vẫn còn trong thư viện, không ghi sổ.
     let a = e.books.join("Văn học").join("Mắt Biếc.epub");
-    let b = e.books.join("Khác").join("Mắt Biếc - copy.epub");
+    let b = e.books.join("Khác").join("M").join("M-01").join("Mắt Biếc - copy.epub");
     std::fs::create_dir_all(b.parent().unwrap()).unwrap();
     std::fs::copy(&a, &b).unwrap();
     analyze(&e);
@@ -157,7 +157,7 @@ fn similar_redownload_goes_to_suspects_with_a_deleted_member() {
     trash::trash_books(&e.lib.conn, &e.lib.config, &e.trash, &[id]).unwrap();
     backdate(&e);
     // Bản khác (ấn bản khác, nội dung khác) cùng tên.
-    let other = e.books.join("Khác").join("Mắt Biếc (bản đẹp).epub");
+    let other = e.books.join("Khác").join("M").join("M-01").join("Mắt Biếc (bản đẹp).epub");
     epub(&other, "Mắt Biếc", "một ấn bản khác hẳn, dài hơn nhiều so với bản cũ đã xoá");
     let st = analyze(&e);
     assert_eq!(st.auto_rejected, Some(0), "không phải y hệt → không tự xoá");
@@ -186,7 +186,7 @@ fn similar_redownload_goes_to_suspects_with_a_deleted_member() {
 fn book_kept_when_its_twin_was_deleted_is_not_a_suspect() {
     let e = setup();
     // Hai ấn bản cùng tên có sẵn; người dùng xoá một bản → bản còn lại (có từ trước) không bị hỏi lại.
-    epub(&e.books.join("Khác").join("Mắt Biếc 2.epub"), "Mắt Biếc", "ấn bản thứ hai, nội dung khác");
+    epub(&e.books.join("Khác").join("M").join("M-01").join("Mắt Biếc 2.epub"), "Mắt Biếc", "ấn bản thứ hai, nội dung khác");
     analyze(&e);
     assert_eq!(dedupe::suspect_groups(&e.lib.conn).unwrap().len(), 1);
     let id = id_of(&e, "Mắt Biếc 2.epub");
@@ -248,8 +248,8 @@ fn copying_back_three_reviewed_editions() {
     // Copy lại cả 3: hai bản đã xoá về đúng chỗ cũ, bản đã giữ sang chỗ khác (chỗ cũ đang có file).
     std::fs::copy(backup.join("Mắt Biếc (bản 2).epub"), dir.join("Mắt Biếc (bản 2).epub")).unwrap();
     std::fs::copy(backup.join("Mắt Biếc (bản 3).epub"), dir.join("Mắt Biếc (bản 3).epub")).unwrap();
-    std::fs::create_dir_all(e.books.join("Khác")).unwrap();
-    std::fs::copy(backup.join("Mắt Biếc.epub"), e.books.join("Khác").join("Mắt Biếc.epub")).unwrap();
+    std::fs::create_dir_all(e.books.join("Khác").join("M").join("M-01")).unwrap();
+    std::fs::copy(backup.join("Mắt Biếc.epub"), e.books.join("Khác").join("M").join("M-01").join("Mắt Biếc.epub")).unwrap();
     let st = analyze(&e);
     assert_eq!(st.auto_rejected, Some(2), "copy giữ thời điểm sửa không bị nhầm là khôi phục");
     assert!(!dir.join("Mắt Biếc (bản 2).epub").exists());

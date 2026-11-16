@@ -31,6 +31,56 @@ use unicode_normalization::UnicodeNormalization;
 
 pub const OTHER_DIR: &str = "Khác";
 
+/// Thư mục con của `Khác` cho các bộ "chưa chắc" nhiều dồn vào một chỗ (thường hàng chục nghìn file):
+/// sách được xếp theo **chữ cái đầu** của tên file (đã bỏ dấu), tối đa 28 thư mục: `A`…`Z`; bắt đầu bằng số →
+/// `0-9`; còn lại (chữ không phải Latin, ký hiệu) → `#`. Trong mỗi chữ, sách nằm trong các **ngăn** đánh số, mỗi ngăn
+/// tối đa [`OTHER_SHELF_MAX`] file: `Khác/T/T-01/Thiên long bát bộ.epub`, `Khác/T/T-02/…`. Sách mới vào ngăn cuối,
+/// đầy thì mở ngăn tiếp theo – không bao giờ phải xáo lại file đã xếp. Explorer/Finder mỗi lần mở chỉ thấy vài chục
+/// mục hoặc tối đa 500 file.
+pub fn other_bucket(file_name: &str) -> String {
+    let stem = match file_name.rfind('.') {
+        Some(i) if i > 0 => &file_name[..i],
+        _ => file_name,
+    };
+    match fold(stem).chars().find(|c| c.is_alphanumeric()) {
+        Some(c) if c.is_ascii_digit() => "0-9".to_string(),
+        Some(c) if c.is_ascii_alphabetic() => c.to_ascii_uppercase().to_string(),
+        _ => "#".to_string(),
+    }
+}
+
+/// Số file tối đa trong một ngăn của `Khác` (một tác phẩm nhiều định dạng không bị tách khỏi nhau).
+pub const OTHER_SHELF_MAX: usize = 500;
+
+/// Tên ngăn thứ `n` của chữ `letter`: `T-01`, `0-9-02`, `#-01`.
+pub fn other_shelf_name(letter: &str, n: usize) -> String {
+    format!("{letter}-{n:02}")
+}
+
+/// Số thứ tự nếu `name` là một ngăn của chữ `letter` (`T-03` → 3), không phân biệt hoa thường.
+pub fn other_shelf_number(letter: &str, name: &str) -> Option<usize> {
+    let head = name.get(..letter.len())?;
+    if !head.eq_ignore_ascii_case(letter) {
+        return None;
+    }
+    let num = name[letter.len()..].strip_prefix('-')?;
+    if num.is_empty() || !num.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    num.parse().ok()
+}
+
+/// `name` có phải tên một thư mục chữ cái do [`other_bucket`] tạo ra không.
+pub fn is_other_bucket(name: &str) -> bool {
+    let b = name.as_bytes();
+    name == "0-9" || name == "#" || (b.len() == 1 && b[0].is_ascii_alphabetic())
+}
+
+/// `name` có phải thư mục `Khác` không (so bỏ dấu, không phân biệt hoa thường).
+pub fn is_other_dir(name: &str) -> bool {
+    fold(name) == fold(OTHER_DIR)
+}
+
 /// Định dạng được coi là sách: không bao giờ bị xoá. Mọi file khác (ảnh, âm thanh, video, .opf, .db…) trong hộp thư đến bị dọn.
 const BOOK_EXT: &[&str] = &[
     "epub", "mobi", "azw", "azw1", "azw3", "azw4", "prc", "pdf", "docx", "doc", "odt", "txt", "rtf", "fb2", "djvu",
@@ -605,6 +655,203 @@ fn find_existing(def: &RuleDef, cats: &[(String, PathBuf)]) -> Option<PathBuf> {
         .map(|(_, p)| (*p).clone())
 }
 
+/// Các ngăn của một chữ trong `Khác`.
+struct Letter {
+    /// Ngăn đang điền.
+    n: usize,
+    dir: PathBuf,
+    cur: DirListing,
+    /// Mọi file trong mọi ngăn của chữ này: tên → (dung lượng, đường dẫn), để nhận ra bản trùng y hệt.
+    all: HashMap<String, (u64, PathBuf)>,
+}
+
+impl Letter {
+    /// Bản trùng y hệt (cùng tên, cùng dung lượng) đã có trong một ngăn nào đó.
+    fn duplicate(&self, name: &str, size: u64) -> Option<PathBuf> {
+        self.all.get(&name_key(name)).filter(|(s, _)| *s == size).map(|(_, p)| p.clone())
+    }
+
+    /// Giữ chỗ trong ngăn hiện tại, trả về đường dẫn đích.
+    fn reserve(&mut self, name: &str, size: u64) -> PathBuf {
+        let to = self.dir.join(self.cur.reserve(name, size));
+        self.all.entry(name_key(name)).or_insert((size, to.clone()));
+        to
+    }
+}
+
+/// Chọn ngăn cho sách vào `Khác`: đọc mỗi chữ một lần, giữ trong bộ nhớ.
+pub(crate) struct Shelves {
+    other: PathBuf,
+    dry_run: bool,
+    letters: HashMap<String, Letter>,
+}
+
+impl Shelves {
+    pub(crate) fn new(other: &Path, dry_run: bool) -> Self {
+        Shelves { other: other.to_path_buf(), dry_run, letters: HashMap::new() }
+    }
+
+    /// Ngăn cho một tác phẩm `k` file chữ `letter`: ngăn cuối, hoặc ngăn mới nếu thêm vào sẽ quá
+    /// [`OTHER_SHELF_MAX`] (ngăn đang rỗng thì vẫn nhận, để không tách các định dạng).
+    fn place(&mut self, letter: &str, k: usize) -> Result<&mut Letter> {
+        let dry = self.dry_run;
+        if !self.letters.contains_key(letter) {
+            let ldir = self.other.join(letter);
+            let mut all = HashMap::new();
+            let mut last: Option<(usize, PathBuf, DirListing)> = None;
+            for e in std::fs::read_dir(&ldir).into_iter().flatten().flatten() {
+                crate::progress::pulse();
+                if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                let Some(n) = other_shelf_number(letter, &e.file_name().to_string_lossy()) else { continue };
+                let listing = DirListing::read(&e.path());
+                for (key, size) in &listing.0 {
+                    if *size != u64::MAX {
+                        all.insert(key.clone(), (*size, e.path().join(key)));
+                    }
+                }
+                if last.as_ref().is_none_or(|(m, _, _)| n > *m) {
+                    last = Some((n, e.path(), listing));
+                }
+            }
+            let (n, dir, cur) = last.unwrap_or_else(|| {
+                let d = ldir.join(other_shelf_name(letter, 1));
+                (1, d, DirListing(HashMap::new()))
+            });
+            self.letters.insert(letter.to_string(), Letter { n, dir, cur, all });
+        }
+        let l = self.letters.get_mut(letter).expect("vừa thêm");
+        let used = l.cur.0.len();
+        if used > 0 && used + k > OTHER_SHELF_MAX {
+            l.n += 1;
+            l.dir = self.other.join(letter).join(other_shelf_name(letter, l.n));
+            l.cur = DirListing::read(&l.dir);
+        }
+        if !dry {
+            std::fs::create_dir_all(&l.dir)?;
+        }
+        Ok(l)
+    }
+
+    /// Thư mục ngăn cho một file (chuyển tay vào `Khác`).
+    pub(crate) fn dir_for(&mut self, file_name: &str) -> Result<PathBuf> {
+        Ok(self.place(&other_bucket(file_name), 1)?.dir.clone())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BucketReport {
+    pub dry_run: bool,
+    /// File sách đã chuyển từ gốc `Khác` vào thư mục con.
+    pub moved_files: usize,
+    pub failures: Vec<String>,
+    pub cancelled: bool,
+}
+
+/// Xếp các file sách đang nằm thẳng ở gốc thư mục `Khác` hoặc thẳng trong thư mục chữ cái (thư viện cũ, hoặc người
+/// dùng tự thả vào) vào ngăn theo [`other_bucket`]. Sau lần đầu chỉ còn phải đọc gốc `Khác` và 28 thư mục chữ cái
+/// (toàn thư mục con) nên lần gọi sau gần như không tốn gì. Không ghi đè (trùng tên thêm `(n)`); dùng chung nhật ký / DB / huỷ của [`TriageOptions`].
+pub fn bucket_other(cfg: &Config, opts: &TriageOptions) -> Result<BucketReport> {
+    if cfg.read_only {
+        return Err(Error::ReadOnly);
+    }
+    let mut rep = BucketReport { dry_run: opts.dry_run, ..Default::default() };
+    let Some(other) =
+        classify::list_categories(cfg)?.into_iter().find(|c| is_other_dir(&c.name)).map(|c| c.path)
+    else {
+        return Ok(rep);
+    };
+    crate::progress::working_on(&other);
+    // File sách nằm thẳng ở gốc `Khác` hoặc thẳng trong thư mục chữ cái (`Khác/T/x.epub`) – chưa vào ngăn.
+    let mut files: Vec<(PathBuf, String, u64)> = Vec::new();
+    let mut letter_dirs = Vec::new();
+    let collect = |dir: &Path, files: &mut Vec<(PathBuf, String, u64)>, letter_dirs: &mut Vec<PathBuf>| {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            crate::progress::pulse();
+            let Ok(t) = e.file_type() else { continue };
+            if t.is_dir() {
+                if dir == other && is_other_bucket(&e.file_name().to_string_lossy()) {
+                    letter_dirs.push(e.path());
+                }
+                continue;
+            }
+            let p = e.path();
+            if !t.is_file() || !is_book(&p) {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+            files.push((p, name, size));
+        }
+    };
+    collect(&other, &mut files, &mut letter_dirs);
+    for d in std::mem::take(&mut letter_dirs) {
+        collect(&d, &mut files, &mut Vec::new());
+    }
+    if files.is_empty() {
+        return Ok(rep);
+    }
+    files.sort_by(|a, b| a.1.cmp(&b.1));
+    let cancelled = || opts.cancel.is_some_and(|c| c.load(Ordering::Relaxed));
+    let report = |done: usize, total: usize| {
+        if let Some(f) = opts.progress {
+            f(Step { phase: "triage_other", done, total });
+        }
+    };
+    let total = files.len();
+    report(0, total);
+    let mut journal = match (opts.dry_run, opts.journal) {
+        (false, Some(p)) => {
+            if let Some(d) = p.parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            Some(std::fs::OpenOptions::new().create(true).append(true).open(p)?)
+        }
+        _ => None,
+    };
+    let conn = if opts.dry_run { None } else { opts.conn };
+    let mut tx = conn.map(crate::db::write_tx).transpose()?;
+    let mut shelves = Shelves::new(&other, opts.dry_run);
+    for (i, (f, name, size)) in files.iter().enumerate() {
+        if i > 0 && i.is_multiple_of(MOVE_CHUNK) {
+            if let Some(t) = tx.take() {
+                t.commit()?;
+                tx = conn.map(crate::db::write_tx).transpose()?;
+            }
+            report(i, total);
+        }
+        if cancelled() {
+            rep.cancelled = true;
+            break;
+        }
+        let to = shelves.place(&other_bucket(name), 1)?.reserve(name, *size);
+        if opts.dry_run {
+            rep.moved_files += 1;
+            continue;
+        }
+        crate::progress::working_on(f);
+        match moves::move_file(f, &to) {
+            Ok(()) => {
+                rep.moved_files += 1;
+                if let Some(t) = tx.as_ref() {
+                    sync_db(t, cfg, f, Some(&to));
+                }
+                if let Some(j) = journal.as_mut() {
+                    let line = serde_json::json!({"from": f.to_string_lossy(), "to": to.to_string_lossy()});
+                    let _ = writeln!(j, "{line}");
+                }
+            }
+            Err(e) => rep.failures.push(format!("{}: {e}", f.display())),
+        }
+    }
+    if let Some(t) = tx.take() {
+        t.commit()?;
+    }
+    report(rep.moved_files.min(total), total);
+    Ok(rep)
+}
+
 /// Tự phân loại toàn bộ hộp thư đến theo mô tả ở đầu module.
 pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<TriageReport> {
     if cfg.read_only {
@@ -707,6 +954,7 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
     // Mở giao dịch (giữ chỗ ghi) sau bước đoán thể loại, để không chặn kết nối khác suốt bước đó.
     let mut tx = conn.map(crate::db::write_tx).transpose()?;
     let mut listings: HashMap<PathBuf, DirListing> = HashMap::new();
+    let mut shelves: Option<Shelves> = None;
     for (ci, chunk) in units.chunks(MOVE_CHUNK).enumerate() {
         let start = ci * MOVE_CHUNK;
         if start > 0 {
@@ -725,7 +973,7 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
         let mut dups: Vec<(&Path, PathBuf, u64)> = Vec::new();
         for (k, u) in chunk.iter().enumerate() {
             rep.units += 1;
-            let (label, dest_dir) = match decisions[start + k] {
+            let (label, cat_dir) = match decisions[start + k] {
                 Some(def) => {
                     let dir = dest_cache
                         .entry(def.name.to_string())
@@ -735,7 +983,7 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
                 None => {
                     let dir = dest_cache.entry(OTHER_DIR.to_string()).or_insert_with(|| {
                         cats.iter()
-                            .find(|(n, _)| fold(n) == fold(OTHER_DIR))
+                            .find(|(n, _)| is_other_dir(n))
                             .map(|(_, p)| p.clone())
                             .unwrap_or_else(|| root.join(OTHER_DIR))
                     });
@@ -743,17 +991,46 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
                     (OTHER_DIR.to_string(), dir.clone())
                 }
             };
+            let is_other = decisions[start + k].is_none();
             *rep.by_category.entry(label.clone()).or_default() += 1;
-            if !listings.contains_key(&dest_dir) {
-                // Lần đầu gặp thư mục đích này: tạo nếu chưa có, rồi đọc danh sách file một lần.
-                crate::progress::working_on(&dest_dir);
-                if !dest_dir.is_dir() && !cats.iter().any(|(_, p)| *p == dest_dir) {
-                    if !opts.dry_run {
-                        std::fs::create_dir_all(&dest_dir)?;
-                    }
-                    rep.created_dirs.push(label.clone());
-                    cats.push((label.clone(), dest_dir.clone()));
+            if !cat_dir.is_dir() && !cats.iter().any(|(_, p)| *p == cat_dir) {
+                // Thể loại chưa có thư mục: tạo mới.
+                if !opts.dry_run {
+                    std::fs::create_dir_all(&cat_dir)?;
                 }
+                rep.created_dirs.push(label.clone());
+                cats.push((label.clone(), cat_dir.clone()));
+            }
+            if is_other {
+                // `Khác`: vào ngăn của chữ cái đầu (mọi định dạng của tác phẩm vào cùng một ngăn).
+                let first = u.files[0].0.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                crate::progress::working_on(&cat_dir);
+                let shelf = shelves
+                    .get_or_insert_with(|| Shelves::new(&cat_dir, opts.dry_run))
+                    .place(&other_bucket(&first), u.files.len())?;
+                for (f, size) in &u.files {
+                    let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    if let Some(same) = shelf.duplicate(&name, *size) {
+                        if opts.dry_run {
+                            rep.duplicates_trashed += 1;
+                        } else {
+                            dups.push((f, same, *size));
+                        }
+                        continue;
+                    }
+                    let to = shelf.reserve(&name, *size);
+                    if opts.dry_run {
+                        rep.moved_files += 1;
+                    } else {
+                        to_move.push((f, to));
+                    }
+                }
+                continue;
+            }
+            let dest_dir = cat_dir;
+            if !listings.contains_key(&dest_dir) {
+                // Lần đầu gặp thư mục đích này: đọc danh sách file một lần.
+                crate::progress::working_on(&dest_dir);
                 listings.insert(dest_dir.clone(), DirListing::read(&dest_dir));
             }
             let listing = listings.get_mut(&dest_dir).expect("vừa thêm");
@@ -965,7 +1242,7 @@ mod tests {
         assert!(root.join("Thơ/Tập thơ xuân - Nguyễn A.epub").is_file(), "dùng thư mục có sẵn");
         assert!(root.join("Thơ/Tập thơ xuân - Nguyễn A.pdf").is_file(), "mọi định dạng cùng chuyển");
         assert!(root.join("Trinh thám - Hình sự/Vụ án bí ẩn - Trần B.mobi").is_file(), "tạo thư mục mới");
-        assert!(root.join("Khác/Sách không rõ - Lê C.epub").is_file(), "chưa chắc → Khác");
+        assert!(root.join("Khác/S/S-01/Sách không rõ - Lê C.epub").is_file(), "chưa chắc → Khác, ngăn theo chữ cái đầu");
         assert_eq!(rep.to_other, 1);
         assert!(!inbox.join("Calibre Library").exists(), "thư mục con đã vào Thùng rác");
         assert!(!inbox.join("loose.opf").exists());
@@ -1053,5 +1330,108 @@ mod tests {
         for k in [1, 3, 4, 5, 6] {
             assert!(root.join(format!("Thơ/Tập thơ ({k}).epub")).is_file(), "thiếu ({k})");
         }
+    }
+
+    #[test]
+    fn other_bucket_names() {
+        assert_eq!(other_bucket("Thiên long bát bộ.epub"), "T");
+        assert_eq!(other_bucket("Đất rừng phương Nam.pdf"), "D");
+        assert_eq!(other_bucket("ÔNG GIÀ VÀ BIỂN CẢ.mobi"), "O");
+        assert_eq!(other_bucket("« Người lạ ».epub"), "N", "bỏ ký tự đầu không phải chữ");
+        assert_eq!(other_bucket("A.epub"), "A");
+        assert_eq!(other_bucket("an.epub"), "A");
+        assert_eq!(other_bucket("2 vạn dặm dưới đáy biển.epub"), "0-9");
+        assert_eq!(other_bucket("1984.epub"), "0-9");
+        assert_eq!(other_bucket("三国演义.epub"), "#");
+        assert_eq!(other_bucket("!!!.epub"), "#");
+        for b in ["T", "A", "0-9", "#"] {
+            assert!(is_other_bucket(b), "{b}");
+        }
+        for n in ["Conan", "Th", "Thế", "abc", "7 seeds", "1"] {
+            assert!(!is_other_bucket(n), "{n}");
+        }
+        assert!(is_other_dir("khac") && is_other_dir("Khác") && !is_other_dir("Thơ"));
+    }
+
+    #[test]
+    fn shelf_names() {
+        assert_eq!(other_shelf_name("T", 1), "T-01");
+        assert_eq!(other_shelf_name("0-9", 12), "0-9-12");
+        assert_eq!(other_shelf_number("T", "T-03"), Some(3));
+        assert_eq!(other_shelf_number("T", "t-120"), Some(120));
+        assert_eq!(other_shelf_number("0-9", "0-9-01"), Some(1));
+        assert_eq!(other_shelf_number("#", "#-02"), Some(2));
+        for bad in ["T", "T-", "T01", "T-0a", "N-01", "Truyện"] {
+            assert_eq!(other_shelf_number("T", bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn bucket_other_splits_flat_khac() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        let cfg = Config { library_root: Some(root.to_path_buf()), ..Config::default() };
+        write(&root.join("Khác/Thiên long.epub"), b"1");
+        write(&root.join("Khác/Thiên long.pdf"), b"2");
+        write(&root.join("Khác/1984.mobi"), b"3");
+        write(&root.join("Khác/T/T-01/Thiên long.epub"), b"cu");
+        write(&root.join("Khác/T/Tự thả.epub"), b"4");
+        write(&root.join("Khác/ghi chu.docx.tmp"), b"x");
+        write(&root.join("Khác/Conan/Conan 1.epub"), b"c");
+        let journal = root.join("j.jsonl");
+        let dry = bucket_other(&cfg, &TriageOptions { dry_run: true, ..Default::default() }).unwrap();
+        assert_eq!(dry.moved_files, 4);
+        assert!(root.join("Khác/1984.mobi").is_file(), "dry-run không chuyển");
+        assert!(!root.join("Khác/0-9").exists(), "dry-run không tạo thư mục");
+        let rep = bucket_other(&cfg, &TriageOptions { journal: Some(&journal), ..Default::default() }).unwrap();
+        assert!(rep.failures.is_empty(), "{:?}", rep.failures);
+        assert_eq!(rep.moved_files, 4);
+        assert!(root.join("Khác/T/T-01/Thiên long (1).epub").is_file(), "không ghi đè");
+        assert_eq!(std::fs::read(root.join("Khác/T/T-01/Thiên long.epub")).unwrap(), b"cu");
+        assert!(root.join("Khác/T/T-01/Thiên long.pdf").is_file());
+        assert!(root.join("Khác/T/T-01/Tự thả.epub").is_file(), "file lẻ trong thư mục chữ cái cũng vào ngăn");
+        assert!(root.join("Khác/0-9/0-9-01/1984.mobi").is_file());
+        assert!(root.join("Khác/ghi chu.docx.tmp").is_file(), "file không phải sách để nguyên");
+        assert!(root.join("Khác/Conan/Conan 1.epub").is_file(), "thư mục con có sẵn để nguyên");
+        assert_eq!(std::fs::read_to_string(&journal).unwrap().lines().count(), 4);
+        let again = bucket_other(&cfg, &TriageOptions::default()).unwrap();
+        assert_eq!(again.moved_files, 0, "lần sau không còn gì để chuyển");
+    }
+
+    #[test]
+    fn shelves_hold_at_most_500_and_never_split_a_work() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        let cfg = Config { library_root: Some(root.to_path_buf()), ..Config::default() };
+        for i in 0..(OTHER_SHELF_MAX * 2 + 1) {
+            write(&root.join(format!("Khác/Truyện {i:04}.epub")), b"x");
+        }
+        let rep = bucket_other(&cfg, &TriageOptions::default()).unwrap();
+        assert_eq!(rep.moved_files, OTHER_SHELF_MAX * 2 + 1);
+        let count = |d: &str| std::fs::read_dir(root.join(d)).map(|r| r.count()).unwrap_or(0);
+        assert_eq!(count("Khác/T/T-01"), OTHER_SHELF_MAX);
+        assert_eq!(count("Khác/T/T-02"), OTHER_SHELF_MAX);
+        assert_eq!(count("Khác/T/T-03"), 1);
+        assert_eq!(count("Khác/T"), 3, "chỉ có các ngăn");
+
+        // Ngăn cuối còn 1 chỗ, tác phẩm 2 định dạng → cả hai vào ngăn mới.
+        for i in 0..(OTHER_SHELF_MAX - 2) {
+            write(&root.join(format!("Khác/T/T-03/Thêm {i:04}.epub")), b"y");
+        }
+        assert_eq!(count("Khác/T/T-03"), OTHER_SHELF_MAX - 1);
+        write(&root.join("Chưa phân loại/Tên lạ - Ai đó.epub"), b"e");
+        write(&root.join("Chưa phân loại/Tên lạ - Ai đó.pdf"), b"p");
+        let fake = Fake(RefCell::new(vec![]));
+        let rep = run(&cfg, &fake, &TriageOptions::default()).unwrap();
+        assert!(rep.failures.is_empty(), "{:?}", rep.failures);
+        assert_eq!(rep.to_other, 1);
+        assert!(root.join("Khác/T/T-04/Tên lạ - Ai đó.epub").is_file());
+        assert!(root.join("Khác/T/T-04/Tên lạ - Ai đó.pdf").is_file());
+        assert_eq!(count("Khác/T/T-03"), OTHER_SHELF_MAX - 1);
+
+        // Bản y hệt nằm ở ngăn cũ vẫn được nhận ra.
+        write(&root.join("Chưa phân loại/x/Truyện 0003.epub"), b"x");
+        let rep = run(&cfg, &fake, &TriageOptions::default()).unwrap();
+        assert_eq!(rep.duplicates_trashed, 1, "{rep:?}");
     }
 }

@@ -41,7 +41,13 @@ pub fn locate(cfg: &Config, root: &Path, root_kind: &str, path: &Path) -> Locati
     }
     let category = comps[0].clone();
     let in_inbox = fold(&category) == fold(&cfg.inbox_name);
-    let series_dir = if comps.len() >= 3 { Some(comps[comps.len() - 2].clone()) } else { None };
+    // Thư mục chia nhỏ `Khác` (`Khác\T\x.epub`, `Khác\T\T-01\x.epub`) không phải thư mục bộ.
+    let other_bucket = crate::triage::is_other_dir(&category)
+        && comps.len() >= 3
+        && crate::triage::is_other_bucket(&comps[1])
+        && (comps.len() == 3
+            || (comps.len() == 4 && crate::triage::other_shelf_number(&comps[1], &comps[2]).is_some()));
+    let series_dir = if comps.len() >= 3 && !other_bucket { Some(comps[comps.len() - 2].clone()) } else { None };
     Location { rel_path, category: Some(category), in_inbox, series_dir }
 }
 
@@ -602,6 +608,11 @@ mod tests {
         assert!(!l.in_inbox);
         let l = locate(&cfg, root, "library", Path::new("/b/Chua phan loai/x.epub"));
         assert!(l.in_inbox, "so khớp inbox bỏ dấu");
+        let l = locate(&cfg, root, "library", Path::new("/b/Khác/T/T-02/Thiên long.epub"));
+        assert_eq!(l.category.as_deref(), Some("Khác"));
+        assert_eq!(l.series_dir, None, "thư mục chia nhỏ Khác không phải bộ");
+        let l = locate(&cfg, root, "library", Path::new("/b/Khác/Conan/Conan 1.epub"));
+        assert_eq!(l.series_dir.as_deref(), Some("Conan"));
         let l = locate(&cfg, root, "library", Path::new("/b/x.epub"));
         assert_eq!(l.category, None);
         let l = locate(&cfg, root, "source", Path::new("/b/a/x.epub"));

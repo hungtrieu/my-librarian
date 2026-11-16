@@ -107,7 +107,7 @@ Lệnh thay đổi file chỉ **xem trước**; thêm `--yes` để thực hiệ
 | `dupes --yes [--keep HASH=ID]` | Dọn mọi bản trùng chắc chắn (SHA-256) vào Thùng rác |
 | `trash <id...> --yes` | Xoá sách đã chọn vào Thùng rác |
 | `classify --yes [--include-medium]` | Di chuyển sách từ `Chưa phân loại` vào thư mục đề xuất |
-| `triage [--yes]` | Tự phân loại cả hộp thư đến (kể cả thư mục kiểu Calibre): đọc `metadata.opf`, làm phẳng, tạo thư mục thể loại mới, chưa chắc → `Khác`, rồi đưa mọi file không phải sách (kể cả âm thanh, video) và thư mục thừa vào Thùng rác. Mặc định chạy tự động mỗi lần quét; tắt bằng `config --auto-triage false` |
+| `triage [--yes]` | Tự phân loại cả hộp thư đến (kể cả thư mục kiểu Calibre): đọc `metadata.opf`, làm phẳng, tạo thư mục thể loại mới, chưa chắc → `Khác` (chia thư mục con theo chữ cái đầu của tên file: `Khác/A/`…`Khác/Z/`, sách bắt đầu bằng số vào `Khác/0-9/`, còn lại `Khác/#/`; trong mỗi chữ là các ngăn tối đa 500 file `T-01`, `T-02`…, để Explorer/Finder mở nhanh; `Khác` phẳng có sẵn cũng được tự chia), rồi đưa mọi file không phải sách (kể cả âm thanh, video) và thư mục thừa vào Thùng rác. Mặc định chạy tự động mỗi lần quét; tắt bằng `config --auto-triage false` |
 | `move <id> <thư mục> --yes` | Phân loại tay |
 | `undo <lô>` | Hoàn tác một lô di chuyển |
 | `decide <id...> --not-dup / --keep-both` | Duyệt nhóm nghi trùng (ghi nhớ kể cả sau khi quét lại) |
