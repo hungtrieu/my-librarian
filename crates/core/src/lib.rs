@@ -47,6 +47,8 @@ pub mod sync;
 pub mod sync_client;
 pub mod sync_proto;
 #[cfg(feature = "desktop")]
+pub mod tagmap;
+#[cfg(feature = "desktop")]
 pub mod testdata;
 #[cfg(feature = "desktop")]
 pub mod trash;

@@ -246,7 +246,7 @@ pub fn folder_tree(conn: &Connection, cfg: &Config, max_depth: usize) -> Result<
 
 /// Thư mục trên đĩa ứng với `rel`, nếu còn: tìm từng cấp theo tên thật trong thư mục (không phân biệt dấu / hoa
 /// thường – thư mục tạo lại bằng tay có thể khác kiểu chữ), để đường dẫn trùng đúng với đường dẫn sách khi quét.
-fn find_dir(root: &Path, rel: &str) -> Option<PathBuf> {
+pub(crate) fn find_dir(root: &Path, rel: &str) -> Option<PathBuf> {
     let mut cur = root.to_path_buf();
     for part in components(rel) {
         let want = name_key(&part);

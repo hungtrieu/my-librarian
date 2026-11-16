@@ -150,6 +150,25 @@ pub fn run_analysis_with(
     if auto_blocked > 0 || !cfg.blocked_categories.is_empty() {
         st.auto_blocked = Some(auto_blocked);
     }
+    // Sách mới xuất hiện ở chỗ khác trong thư viện (chép thẳng vào một thư mục thể loại, hoặc tự phân loại chưa
+    // biết tag vì không có metadata.opf): xếp theo ánh xạ tag → thể loại của người dùng.
+    if !st.scan.cancelled && cfg.auto_triage && !cfg.read_only && !cfg.tag_map.is_empty() {
+        let opts = crate::tagmap::PlanOptions { first_seen_scan: Some(summary.scan_id), ..Default::default() };
+        match crate::tagmap::plan(conn, cfg, &opts).and_then(|p| crate::tagmap::apply(conn, cfg, &p)) {
+            Ok(r) => {
+                if !r.moved.is_empty() || !r.failures.is_empty() {
+                    tracing::info!("ánh xạ tag: {} sách mới chuyển, {} lỗi", r.moved.len(), r.failures.len());
+                }
+                for f in &r.failures {
+                    tracing::warn!("ánh xạ tag: {}: {}", f.path, f.message);
+                }
+                if !r.moved.is_empty() {
+                    st.auto_triaged = Some(st.auto_triaged.unwrap_or(0) + r.moved.len());
+                }
+            }
+            Err(e) => tracing::warn!("ánh xạ tag lỗi: {e}"),
+        }
+    }
     // Sách đã xoá trước đây mà lại được tải về (nội dung y hệt): đưa thẳng vào Thùng rác, trước khi băm / tìm trùng.
     if !st.scan.cancelled && cfg.auto_reject_deleted && !cfg.read_only {
         let r =

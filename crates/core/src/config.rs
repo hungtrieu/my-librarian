@@ -31,6 +31,11 @@ pub struct Config {
     /// người dùng tự chia, vd. `Ngôn tình - Đam mỹ/Đam mỹ`). Sách trong đó vào Thùng rác; sách tự phân loại vào đó
     /// cũng vậy, và thư mục không được tạo lại. Xem `blocked.rs`.
     pub blocked_categories: Vec<String>,
+    /// Ánh xạ tag (metadata `subject` của sách) → thư mục thể loại (đường dẫn tương đối, có thể là thư mục con,
+    /// vd. `Tiểu thuyết/Nước ngoài`). Tag so khớp không phân biệt dấu / hoa thường / ký tự ngăn cách, nên
+    /// `Tiểu thuyết` và `tieu-thuyet` là một. Đổi ánh xạ thì sách mang tag đó được chuyển sang thư mục mới; sách mới
+    /// tự phân loại cũng theo ánh xạ trước luật có sẵn. Xem `tagmap.rs`.
+    pub tag_map: Vec<TagRule>,
     /// Ngưỡng tin cậy phân loại (E6-04).
     pub classify_high: u8,
     pub classify_medium: u8,
@@ -52,12 +57,22 @@ impl Default for Config {
             auto_triage: true,
             auto_reject_deleted: true,
             blocked_categories: Vec::new(),
+            tag_map: Vec::new(),
             classify_high: 75,
             classify_medium: 45,
             hash_threads: 3,
             scan_time: "03:00".into(),
         }
     }
+}
+
+/// Một dòng ánh xạ tag → thư mục thể loại.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagRule {
+    /// Tag như người dùng thấy (một trong các cách viết).
+    pub tag: String,
+    /// Thư mục đích, tương đối so với thư mục thư viện, phân cách `/`.
+    pub target: String,
 }
 
 impl Config {

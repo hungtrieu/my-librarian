@@ -58,6 +58,15 @@ Chạy lần lượt: format → clippy (`-D warnings`) → test → build relea
 - **Chạy mỗi đêm:** `scripts/register-nightly.ps1 [-At 02:00]` đăng ký Task Scheduler (chạy bù nếu máy tắt đúng giờ); gỡ bằng `-Remove`.
 - **Đóng gói** cần `tauri-cli`: `cargo install tauri-cli --version "^2" --locked`.
 
+## Gán tag → thể loại
+
+Màn **Tag → thể loại** (thanh bên, mục Dọn dẹp) liệt kê mọi tag (metadata `subject`) của sách trong thư viện kèm số sách và nơi chúng đang nằm. Chọn thư mục thể loại (kể cả thư mục con, vd. `Tiểu thuyết › Nước ngoài`) cho từng tag, hoặc tick nhiều tag rồi gán một lần; `Tiểu thuyết`, `tieu-thuyet`, `TIỂU THUYẾT` là cùng một tag, và nhiều tag (`novel`, `fiction`…) gán được vào cùng thư mục. Bấm Lưu → xem trước sách nào chuyển đi đâu → chuyển (lô `Tag → thể loại` trong Hoạt động, hoàn tác được).
+
+- Đổi đích của một tag thì sách mang tag đó chuyển theo, kể cả từ thư mục con lên thư mục cha và ngược lại. Thư mục bộ / tác giả bên trong (`…/Harry Potter/`) đi cùng sách; thư mục cũ rỗng được dọn.
+- Sách mang nhiều tag: các đích cùng nhánh thì chọn đích sâu nhất; khác nhánh thì không chuyển, chỉ báo xung đột.
+- Sách mới: tự phân loại hộp thư đến dùng ánh xạ trước các luật có sẵn; sách mới chép thẳng vào thư mục khác trong thư viện cũng được xếp theo ánh xạ sau lần quét.
+- Ánh xạ lưu trong `config.json` (`tag_map`). Lõi: `crates/core/src/tagmap.rs`.
+
 ## Gộp thư mục thể loại sau khi giải nén
 
 `scripts/merge-categories.py` (Python 3, không cần thư viện ngoài) gộp các thư mục thể loại trùng/lồng nhau ở cấp 1 của kho: `Hồi Ký, Tuỳ Bút` + `Hồi Ký - Tùy Bút` → một thư mục; `Bút Ký - Hồi Ký - Thơ` khi đã có `Bút Ký - Hồi Ký` → hồi ký về thư mục có sẵn, phần còn lại thành `Thơ`. Mỗi tác phẩm (mọi định dạng cùng tên) được xếp theo tên sách, metadata EPUB/MOBI, từ khoá trong phần đầu sách và hình dạng dòng (thơ). Bỏ qua `Calibre Library` và hộp thư đến.

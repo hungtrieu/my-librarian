@@ -17,6 +17,7 @@ use librarian_core::reader::{self, ComicSource, ReaderInfo};
 use librarian_core::report::{self, ReportStats};
 use librarian_core::retitle::{self, RetitleOptions, RetitleReport};
 use librarian_core::scan::ScanProgress;
+use librarian_core::tagmap;
 use librarian_core::trash::{self, SystemTrasher, TrashReport};
 use librarian_core::Step;
 use librarian_core::{config, db, lock, Config, Library};
@@ -190,10 +191,13 @@ async fn set_library(state: State<'_, AppState>, path: String) -> CmdResult<()> 
 #[tauri::command]
 async fn save_config(state: State<'_, AppState>, config: Config) -> CmdResult<()> {
     with_lib(&state.lib, move |lib| {
-        // Danh sách chặn chỉ đổi qua block_category / unblock_category (form Cài đặt có thể giữ bản cũ).
+        // Danh sách chặn chỉ đổi qua block_category / unblock_category, ánh xạ tag qua tag_map_save (form Cài đặt
+        // có thể giữ bản cũ).
         let blocked = std::mem::take(&mut lib.config.blocked_categories);
+        let tag_map = std::mem::take(&mut lib.config.tag_map);
         lib.config = config;
         lib.config.blocked_categories = blocked;
+        lib.config.tag_map = tag_map;
         if let Some(r) = lib.config.library_root.clone() {
             db::ensure_root(&lib.conn, &r.to_string_lossy(), "library")?;
         }
@@ -544,6 +548,50 @@ async fn unblock_category(state: State<'_, AppState>, rel: String) -> CmdResult<
             lib.save_config()?;
         }
         Ok(removed)
+    })
+    .await
+}
+
+// ------------------------------------------------------------------ ánh xạ tag → thể loại
+
+/// Mọi tag (metadata `subject`) của sách trong thư viện kèm số sách, nơi đang nằm và thư mục đang được gán.
+#[tauri::command]
+async fn tag_list(state: State<'_, AppState>) -> CmdResult<Vec<tagmap::TagInfo>> {
+    with_lib(&state.lib, |lib| tagmap::list_tags(&lib.conn, &lib.config)).await
+}
+
+/// Kế hoạch: áp `changes` lên bản sao cấu hình (chưa lưu) rồi tìm sách cần chuyển – sách mang các tag vừa đổi, hoặc
+/// mọi tag đã gán nếu `all`.
+fn tag_plan(lib: &Library, changes: &[tagmap::Change], all: bool) -> librarian_core::Result<(Config, tagmap::Plan)> {
+    let mut cfg = lib.config.clone();
+    let olds = tagmap::apply_changes(&mut cfg, changes)?;
+    let opts = tagmap::PlanOptions {
+        tags: (!all).then(|| changes.iter().map(|c| c.tag.clone()).collect()),
+        old_targets: olds,
+        first_seen_scan: None,
+    };
+    let plan = tagmap::plan(&lib.conn, &cfg, &opts)?;
+    Ok((cfg, plan))
+}
+
+/// Xem trước: sách nào sẽ chuyển đi đâu nếu lưu `changes` (không đổi gì).
+#[tauri::command]
+async fn tag_map_plan(state: State<'_, AppState>, changes: Vec<tagmap::Change>, all: bool) -> CmdResult<tagmap::Plan> {
+    with_lib(&state.lib, move |lib| tag_plan(lib, &changes, all).map(|(_, p)| p)).await
+}
+
+/// Lưu `changes` vào cấu hình rồi chuyển sách mang các tag đó sang thư mục mới (`all`: theo mọi tag đã gán). Lô
+/// `tagmap` trong Hoạt động, hoàn tác được.
+#[tauri::command]
+async fn tag_map_save(state: State<'_, AppState>, changes: Vec<tagmap::Change>, all: bool) -> CmdResult<MoveReport> {
+    if busy_kind(&state).is_some() {
+        return Err("Đang quét hoặc dọn trùng – đợi xong rồi đổi thể loại".into());
+    }
+    with_lib(&state.lib, move |lib| {
+        let (cfg, plan) = tag_plan(lib, &changes, all)?;
+        lib.config.tag_map = cfg.tag_map;
+        lib.save_config()?;
+        refreshed(lib, |lib| tagmap::apply(&lib.conn, &lib.config, &plan))
     })
     .await
 }
@@ -1557,6 +1605,9 @@ fn main() {
             category_tree,
             block_category,
             unblock_category,
+            tag_list,
+            tag_map_plan,
+            tag_map_save,
             exact_groups,
             start_clean_exact,
             cancel_clean,

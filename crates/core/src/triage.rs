@@ -1,6 +1,8 @@
 //! Tự phân loại hộp thư đến (`Chưa phân loại`) cho cả bộ sưu tập thả nguyên thư mục (kiểu Calibre Library):
 //! - đọc `metadata.opf` (tag/tiêu đề/mô tả của Calibre) làm bằng chứng thể loại;
 //! - làm phẳng: mỗi tác phẩm (mọi định dạng cùng tên) chuyển thẳng vào thư mục thể loại;
+//! - tag của tác phẩm đã được người dùng ánh xạ vào một thư mục (`tag_map`, xem `tagmap.rs`) → vào đúng thư mục đó,
+//!   trước mọi luật bên dưới;
 //! - biết chắc thể loại → dùng thư mục có sẵn, chưa có thì **tạo mới**; chưa chắc → thư mục `Khác`;
 //! - thư mục thể loại người dùng đã tự chia nhỏ (vd. `Ngôn tình - Đam mỹ/Đam mỹ`, `…/Ngôn tình`, nhiều cấp):
 //!   tác phẩm khớp rõ tên một thư mục con (hoặc từ đồng nghĩa, xem [`SUB_ALIASES`]) đi tiếp vào đó;
@@ -1007,6 +1009,7 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
     // Thể loại bị chặn mà thư mục đã được dọn khỏi đĩa: vẫn là "thư mục có sẵn" của luật tương ứng, để sách cùng
     // thể loại được nhận ra (và vào Thùng rác) thay vì tạo lại thư mục theo tên mặc định.
     let blocked = crate::blocked::Blocked::new(cfg);
+    let mapping = crate::tagmap::Mapping::new(cfg);
     for name in blocked.top_levels() {
         let k = crate::blocked::name_key(&name);
         if !cats.iter().any(|(n, _)| crate::blocked::name_key(n) == k) {
@@ -1126,14 +1129,44 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
         for (k, u) in chunk.iter().enumerate() {
             crate::progress::pulse();
             rep.units += 1;
-            let (label, cat_dir) = match decisions[start + k] {
-                Some(def) => {
+            // Ánh xạ tag → thể loại của người dùng (tagmap.rs) đi trước các luật có sẵn. Tác phẩm không có
+            // metadata.opf: dùng tag đọc từ chính file nếu lần quét trước đã có trong DB.
+            let mapped = if mapping.is_empty() {
+                None
+            } else if u.subjects.is_empty() {
+                tx.as_ref()
+                    .and_then(|t| {
+                        t.query_row(
+                            "SELECT subjects FROM books WHERE path = ?1",
+                            [u.files[0].0.to_string_lossy()],
+                            |r| r.get::<_, String>(0),
+                        )
+                        .optional()
+                        .ok()
+                        .flatten()
+                    })
+                    .and_then(|s| crate::tagmap::triage_target(&mapping, root, &s))
+            } else {
+                crate::tagmap::triage_target(&mapping, root, &u.subjects)
+            };
+            let decision = if mapped.is_some() { None } else { decisions[start + k] };
+            let (label, cat_dir) = match (&mapped, decision) {
+                (Some(dir), _) => {
+                    let rel = dir.strip_prefix(root).unwrap_or(dir);
+                    let label = rel
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    (label, dir.clone())
+                }
+                (None, Some(def)) => {
                     let dir = dest_cache
                         .entry(def.name.to_string())
                         .or_insert_with(|| find_existing(def, &cats).unwrap_or_else(|| root.join(def.name)));
                     (dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), dir.clone())
                 }
-                None => {
+                (None, None) => {
                     let dir = dest_cache.entry(OTHER_DIR.to_string()).or_insert_with(|| {
                         cats.iter()
                             .find(|(n, _)| is_other_dir(n))
@@ -1144,10 +1177,14 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
                     (OTHER_DIR.to_string(), dir.clone())
                 }
             };
-            let is_other = decisions[start + k].is_none();
-            // Thư mục con người dùng tự chia (nhiều cấp) – kể cả thư mục con bị chặn đã dọn khỏi đĩa.
-            let dest_dir =
-                if is_other { cat_dir.clone() } else { descend(root, &cat_dir, u, &blocked, &mut sub_cache) };
+            let is_other = mapped.is_none() && decision.is_none();
+            // Thư mục con người dùng tự chia (nhiều cấp) – kể cả thư mục con bị chặn đã dọn khỏi đĩa. Đích do ánh
+            // xạ tag chỉ định thì dùng đúng thư mục đó.
+            let dest_dir = if is_other || mapped.is_some() {
+                cat_dir.clone()
+            } else {
+                descend(root, &cat_dir, u, &blocked, &mut sub_cache)
+            };
             if !is_other && !blocked.is_empty() {
                 let keys = crate::blocked::dir_keys(root, &dest_dir);
                 if let Some(rel) = blocked.entry_for(&keys) {
@@ -1170,7 +1207,7 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
                     std::fs::create_dir_all(&cat_dir)?;
                 }
                 rep.created_dirs.push(label.clone());
-                if !cats.iter().any(|(_, p)| *p == cat_dir) {
+                if mapped.is_none() && !cats.iter().any(|(_, p)| *p == cat_dir) {
                     cats.push((label.clone(), cat_dir.clone()));
                 }
             }

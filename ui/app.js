@@ -119,6 +119,7 @@ function renderNav() {
     navItem('Trùng chắc chắn', '⧉', { name: 'dupes' }, null, st?.exact_files || null),
     navItem('Nghi trùng', '≈', { name: 'suspects' }, null, st?.suspect_groups || null),
     navItem('Phân loại', '⇢', { name: 'classify' }, null, st?.inbox_books || null),
+    navItem('Tag → thể loại', '#', { name: 'tags' }, (ov.config.tag_map || []).length || null),
     ov.facets.on_ipad ? navItem('Có trên iPad/iPhone', '▭', { name: 'library', scope: 'ipad' }, ov.facets.on_ipad) : null,
     ov.facets.problems ? navItem('Không đọc được', '⚠', { name: 'library', scope: 'problems' }, ov.facets.problems) : null,
     h('div', { class: 'nav-section' }, 'Khác'),
@@ -423,7 +424,7 @@ function render() {
   grid = null;
   const v = S.view.name;
   ({ library: renderLibrary, series: renderLibrary, dupes: renderDupes, suspects: renderSuspects, classify: renderClassify,
-    activity: renderActivity, settings: renderSettings, ipad: renderIpad })[v]();
+    activity: renderActivity, settings: renderSettings, ipad: renderIpad, tags: renderTags })[v]();
 }
 
 function toolbar(title, sub, ...tools) {
@@ -1278,12 +1279,116 @@ async function renderClassify() {
   view.replaceChildren(host, bar);
 }
 
+// ------------------------------------------------------------------ tag → thể loại
+/**
+ * Duyệt tag (metadata "subject") của sách và gán mỗi tag vào một thư mục thể loại (kể cả thư mục con). Các cách viết
+ * cùng khoá (Tiểu thuyết / tieu-thuyet) là một dòng; nhiều tag (novel, fiction…) gán được vào cùng thư mục. Lưu thay
+ * đổi → xem trước sách nào sẽ chuyển đi đâu → lõi chuyển (lô "tagmap", hoàn tác được ở Hoạt động).
+ */
+async function renderTags() {
+  if (!S.ov.library_ok) return renderWelcome();
+  const T = { tags: [], targets: [], pending: new Map(), sel: new Set(), q: '', mode: 'all', limit: 300 };
+  const search = h('input', { type: 'search', placeholder: 'Tìm tag…', 'aria-label': 'Tìm tag' });
+  search.addEventListener('input', debounce(() => { T.q = fold(search.value.trim()); T.limit = 300; paint(); }, 160));
+  const modeSel = h('select', { class: 'pill', 'aria-label': 'Lọc', onchange: (e) => { T.mode = e.target.value; T.limit = 300; paint(); } },
+    ...[['all', 'Mọi tag'], ['unmapped', 'Chưa gán'], ['mapped', 'Đã gán']].map(([v, l]) => h('option', { value: v }, l)));
+  toolbar('Tag → thể loại', 'gán metadata của sách vào thư mục thể loại', h('div', { class: 'search' }, search), modeSel,
+    h('button', { class: 'btn', title: 'Chuyển mọi sách mang tag đã gán về đúng thư mục', onclick: () => preview([], true) }, 'Áp dụng lại tất cả'));
+  view.replaceChildren(h('div', { class: 'pad muted' }, 'Đang đọc tag của thư viện…'));
+  let tree;
+  try { [T.tags, tree] = await Promise.all([call('tag_list'), call('category_tree')]); } catch (e) { return fail(e); }
+  // Thư mục đích chọn được: cây thể loại (3 cấp, không gồm hộp thư đến / Khác / thư mục bị chặn) + đích đã gán mà
+  // thư mục không còn trên đĩa (sẽ được tạo lại khi chuyển).
+  T.targets = tree.filter((n) => !n.blocked).map((n) => ({ rel: n.rel }));
+  for (const t of T.tags) if (t.target && !T.targets.some((x) => fold(x.rel) === fold(t.target))) {
+    T.targets.push({ rel: t.target, missing: true });
+  }
+  T.targets.sort((a, b) => fold(a.rel).localeCompare(fold(b.rel), 'vi'));
+
+  const cur = (t) => (T.pending.has(t.key) ? T.pending.get(t.key).target : t.target) || '';
+  const setTarget = (t, target) => {
+    if ((target || '') === (t.target || '')) T.pending.delete(t.key);
+    else T.pending.set(t.key, { tag: t.label, target: target || null });
+  };
+  const targetSelect = (value, onchange, label) => h('select', { 'aria-label': label, onchange: (e) => onchange(e.target.value) },
+    h('option', { value: '' }, '— chưa gán —'),
+    ...T.targets.map((x) => h('option', { value: x.rel, selected: fold(x.rel) === fold(value) }, relLabel(x.rel) + (x.missing ? ' (chưa có)' : ''))));
+  const host = h('div', { class: 'pad' }), bar = h('div', { class: 'sticky-bar' });
+
+  const paintBar = () => {
+    const n = T.pending.size;
+    const bulk = T.sel.size ? [h('span', { class: 'muted small' }, `${T.sel.size} tag đã chọn →`),
+      targetSelect('', (v) => { for (const t of T.tags) if (T.sel.has(t.key)) setTarget(t, v); T.sel.clear(); paint(); }, 'Gán các tag đã chọn vào')] : [];
+    bar.replaceChildren(h('span', { class: 'grow' }, n ? `${n} thay đổi chưa lưu. Sách mang các tag này sẽ được chuyển sang thư mục mới – xem trước trước khi chuyển.`
+      : 'Chọn thư mục cho từng tag, hoặc tick nhiều tag rồi gán một lần. Tiểu thuyết / tieu-thuyet / TIỂU THUYẾT là cùng một tag.'),
+    ...bulk,
+    n ? h('button', { class: 'btn', onclick: () => { T.pending.clear(); paint(); } }, 'Bỏ thay đổi') : null,
+    h('button', { class: 'btn primary', disabled: !n, onclick: () => preview([...T.pending.values()], false) }, n ? `Lưu ${n} thay đổi…` : 'Lưu'));
+  };
+
+  const paint = () => {
+    const shown = T.tags.filter((t) => (!T.q || fold(t.variants.join(' ') + ' ' + (t.target || '')).includes(T.q))
+      && (T.mode === 'all' || (T.mode === 'mapped') === !!cur(t)));
+    const rows = shown.slice(0, T.limit).map((t) => {
+      const changed = T.pending.has(t.key);
+      return h('tr', { class: changed ? 'changed' : '' },
+        h('td', {}, h('input', { type: 'checkbox', checked: T.sel.has(t.key), 'aria-label': 'Chọn tag', onchange: (e) => { e.target.checked ? T.sel.add(t.key) : T.sel.delete(t.key); paintBar(); } })),
+        h('td', {}, h('div', {}, t.label), t.variants.length > 1 ? h('div', { class: 'muted small' }, t.variants.filter((v) => v !== t.label).join(' · ')) : null),
+        h('td', { class: 'num' }, t.books.toLocaleString('vi-VN')),
+        h('td', { class: 'small' }, ...t.folders.map(([f, n]) => h('span', { class: 'tag', style: 'margin:0 4px 2px 0;display:inline-block' }, `${f ? relLabel(f) : '(gốc)'} · ${n}`))),
+        h('td', {}, targetSelect(cur(t), (v) => { setTarget(t, v); paint(); }, `Thể loại cho tag ${t.label}`), changed ? h('span', { class: 'tag warn', style: 'margin-left:6px' }, 'chưa lưu') : null));
+    });
+    const table = h('table', { class: 'list tag-map' },
+      h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, 'Tag'), h('th', {}, 'Sách'), h('th', {}, 'Đang nằm ở'), h('th', {}, 'Thể loại'))),
+      h('tbody', {}, ...rows));
+    const more = shown.length > T.limit ? h('div', { style: 'text-align:center;margin:12px' },
+      h('button', { class: 'btn', onclick: () => { T.limit += 300; paint(); } }, `Hiện thêm (${(shown.length - T.limit).toLocaleString('vi-VN')} tag)`)) : null;
+    host.replaceChildren(T.tags.length ? (shown.length ? table : h('p', { class: 'muted' }, 'Không có tag nào khớp.'))
+      : h('div', { class: 'empty' }, h('div', {}, h('h2', {}, 'Chưa có tag nào'), h('p', {}, 'Sách trong thư viện chưa có metadata thể loại (subject / tag). Quét lại sau khi thêm sách có tag.'))), more || '');
+    paintBar();
+  };
+
+  /** Xem trước rồi lưu + chuyển. `all`: áp dụng lại mọi tag đã gán. */
+  async function preview(changes, all) {
+    if (S.ov.config.read_only) return fail('Đang bật chế độ chỉ đọc – tắt trong Cài đặt để gán tag và chuyển sách.');
+    let plan;
+    try { plan = await call('tag_map_plan', { changes, all }); } catch (e) { return fail(e); }
+    const n = plan.moves.length;
+    const list = h('div', { class: 'block-tree' });
+    for (const m of plan.moves.slice(0, 500)) list.append(h('div', { class: 'block-row' },
+      h('span', { class: 'grow', title: m.file_name }, m.title || m.file_name),
+      h('span', { class: 'muted small', style: 'white-space:nowrap' }, `${relLabel(m.from) || '(gốc)'} → ${relLabel(m.to)}`)));
+    if (n > 500) list.append(h('div', { class: 'block-row muted small' }, `… và ${(n - 500).toLocaleString('vi-VN')} cuốn nữa`));
+    const conflicts = plan.conflicts.length ? h('div', {},
+      h('p', { class: 'small' }, h('b', {}, `${plan.conflicts.length} cuốn không chuyển`), ' vì mang nhiều tag gán vào các thư mục khác nhánh – gán lại một trong các tag, hoặc chuyển tay:'),
+      h('div', { class: 'block-tree', style: 'max-height:160px' }, ...plan.conflicts.slice(0, 200).map((c) => h('div', { class: 'block-row' },
+        h('span', { class: 'grow', title: c.file_name }, c.title || c.file_name), h('span', { class: 'muted small' }, c.targets.map(relLabel).join(' / ')))))) : null;
+    const ok = await modal({
+      title: all ? 'Áp dụng lại mọi tag đã gán?' : `Lưu ${changes.length} thay đổi?`,
+      ok: n ? `${all ? '' : 'Lưu và '}chuyển ${n.toLocaleString('vi-VN')} cuốn` : (all ? 'Đóng' : 'Lưu'),
+      cancel: all && !n ? null : 'Huỷ',
+      content: h('div', {},
+        h('p', { class: 'small' }, n ? `${n.toLocaleString('vi-VN')} cuốn sẽ được chuyển (trùng tên thêm (1), không ghi đè). Thư mục bộ / tác giả bên trong đi theo sách. Hoàn tác được ở Hoạt động.`
+          : 'Không có sách nào cần chuyển.' + (all ? '' : ' Sách mới mang các tag này sẽ được xếp theo thể loại đã gán.')),
+        n ? list : null, conflicts),
+    });
+    if (!ok || (all && !n)) return;
+    try { reportMoves(await call('tag_map_save', { changes, all })); } catch (e) { return fail(e); }
+    if (!all) toast(`Đã lưu ${changes.length} thay đổi.`);
+    await refreshOverview().catch(fail);
+    render();
+  }
+
+  paint();
+  view.replaceChildren(host, bar);
+}
+
 // ------------------------------------------------------------------ hoạt động (E5-05, E9-04, E8-04)
 async function renderActivity() {
   toolbar('Hoạt động', 'nhật ký xoá / di chuyển / hoàn tác', h('button', { class: 'btn', onclick: () => call('open_recycle_bin').catch(fail) }, 'Mở Thùng rác'));
   let batches, reports;
   try { [batches, reports] = await Promise.all([call('list_batches'), call('report_history')]); } catch (e) { return fail(e); }
-  const kinds = { dedupe: 'Dọn trùng', trash: 'Xoá', classify: 'Phân loại', manual: 'Chuyển tay', retitle: 'Sửa tiêu đề', block: 'Chặn thể loại' };
+  const kinds = { dedupe: 'Dọn trùng', trash: 'Xoá', classify: 'Phân loại', manual: 'Chuyển tay', retitle: 'Sửa tiêu đề', block: 'Chặn thể loại', tagmap: 'Tag → thể loại' };
   const host = h('div', { class: 'pad' });
   if (!batches.length) host.append(h('p', { class: 'muted' }, 'Chưa có thao tác nào.'));
   for (const b of batches) {

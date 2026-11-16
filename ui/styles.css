@@ -325,3 +325,6 @@ body.dragging #nav .nav-item:not([data-drop]) { opacity: 0.5; }
 .block-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; min-height: 34px; }
 .block-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .block-row.is-blocked .grow { color: var(--text-2); text-decoration: line-through; }
+table.tag-map td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); }
+table.tag-map tr.changed td { background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.modal:has(.block-tree) .block-row .muted { max-width: 60%; overflow: hidden; text-overflow: ellipsis; }

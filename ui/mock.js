@@ -43,8 +43,15 @@ const inbox = [add({ title: 'Mắt Biếc', file_name: 'Mắt Biếc (1).epub', 
 add({ title: 'Sách hỏng', file_name: 'Sách hỏng.epub', category: 'Văn học', error: 'zip hỏng: invalid Zip archive' });
 add({ title: 'Sách Kindle mua', authors: 'Amazon', category: 'Văn học', format: 'azw3', drm: true });
 const byId = (id) => books.find((b) => b.id === id);
+// Tag (metadata subject) mẫu cho màn "Tag → thể loại".
+books.forEach((b, i) => {
+  b.subjects = b.category === 'Văn học' ? ['Tiểu thuyết', 'tieu-thuyet', 'Novel', 'Fiction; Classics', 'Văn học Việt Nam'][i % 5]
+    : b.category === 'Công nghệ' ? ['Programming', 'Computers; Programming', 'Khoa học'][i % 3]
+      : b.category === 'Tiểu sử - Hồi ký' ? ['Biography', 'Hồi ký', 'Memoir; Biography'][i % 3]
+        : b.category === 'Ngôn tình - Đam mỹ' ? (b.series === 'Đam mỹ' ? 'Đam mỹ; Romance' : 'Ngôn tình; Romance') : '';
+});
 const present = () => books.filter((b) => !b.gone);
-let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_clean_exact_in_background: false, auto_triage: true, auto_reject_deleted: true, blocked_categories: [], classify_high: 75, classify_medium: 45, hash_threads: 3, scan_time: '03:00' };
+let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_clean_exact_in_background: false, auto_triage: true, auto_reject_deleted: true, blocked_categories: [], tag_map: [], classify_high: 75, classify_medium: 45, hash_threads: 3, scan_time: '03:00' };
 const decided = new Set();
 const TEXT = new Set(['epub', 'mobi', 'prc', 'azw', 'azw3', 'kf8', 'fb2', 'txt']);
 // Hai thiết bị mẫu; ?nodevices=1 để xem lúc chưa ghép.
@@ -129,6 +136,42 @@ function folderTree() {
   for (const rel of config.blocked_categories) if (![...m.keys()].some((k) => fold(k) === fold(rel))) m.set(rel, { rel, name: rel.split('/').pop(), depth: rel.split('/').length, books: 0, blocked: true, exists: false });
   return [...m.values()].sort((a, b) => fold(a.rel).localeCompare(fold(b.rel)));
 }
+/** Khoá tag giống tagmap::tag_key: bỏ dấu, ký tự ngăn cách thành khoảng trắng. */
+const tagKey = (t) => fold(t).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+const splitTags = (s) => (s || '').split(/[;,|]/).map((t) => t.trim()).filter((t) => tagKey(t));
+function tagList() {
+  const m = new Map();
+  for (const b of present()) for (const t of new Set(splitTags(b.subjects))) {
+    const k = tagKey(t); const a = m.get(k) || { key: k, variants: new Map(), books: 0, folders: new Map() };
+    a.books++; a.variants.set(t, (a.variants.get(t) || 0) + 1);
+    const f = b.rel_path.split('\\').slice(0, -1).slice(0, 2).join('/'); a.folders.set(f, (a.folders.get(f) || 0) + 1);
+    m.set(k, a);
+  }
+  for (const r of config.tag_map) if (!m.has(tagKey(r.tag))) m.set(tagKey(r.tag), { key: tagKey(r.tag), variants: new Map([[r.tag, 0]]), books: 0, folders: new Map() });
+  const top = (mm) => [...mm].sort((a, b) => b[1] - a[1]);
+  return [...m.values()].map((a) => { const rule = config.tag_map.find((r) => tagKey(r.tag) === a.key); const variants = top(a.variants).map(([v]) => v);
+    return { key: a.key, label: rule?.tag || variants[0], variants, books: a.books, target: rule?.target || null, folders: top(a.folders).slice(0, 4) }; })
+    .sort((a, b) => b.books - a.books);
+}
+/** Bản giản lược của tagmap::plan (không có phần thư mục bộ đi theo sách). */
+function tagPlan(changes, all) {
+  let map = config.tag_map.slice();
+  for (const c of changes) { map = map.filter((r) => tagKey(r.tag) !== tagKey(c.tag)); if (c.target) map.push({ tag: c.tag, target: c.target }); }
+  const keys = new Set(changes.map((c) => tagKey(c.tag)));
+  const moves = [], conflicts = [];
+  for (const b of present()) {
+    if (b.in_inbox) continue;
+    const tags = splitTags(b.subjects).map(tagKey);
+    if (!all && !tags.some((k) => keys.has(k))) continue;
+    const hits = [...new Set(tags.map((k) => map.find((r) => tagKey(r.tag) === k)).filter(Boolean))];
+    if (!hits.length) continue;
+    const deep = hits.reduce((a, r) => (r.target.split('/').length > a.target.split('/').length ? r : a));
+    const from = b.rel_path.split('\\').slice(0, -1).join('/');
+    if (!hits.every((r) => fold(deep.target + '/').startsWith(fold(r.target + '/')))) { conflicts.push({ book_id: b.id, title: b.title, file_name: b.file_name, from, targets: hits.map((r) => r.target) }); continue; }
+    if (fold(from) !== fold(deep.target)) moves.push({ book_id: b.id, title: b.title, file_name: b.file_name, from, to: deep.target, tag: deep.tag });
+  }
+  return { plan: { moves, conflicts }, map };
+}
 const trash = (ids) => { const t = ids.map(byId).filter(Boolean); t.forEach((b) => { b.gone = true; }); batches.unshift({ id: batches.length + 1, kind: 'trash', created_at: Math.floor(Date.now() / 1000), undone_at: null, done: t.length, failed: 0, bytes: t.reduce((s, b) => s + b.size, 0), ops: t.map((b) => ({ id: b.id, kind: 'trash', src: b.path, dst: null, status: 'done' })) });
   return { batch_id: batches.length, trashed: t.length, freed_bytes: t.reduce((s, b) => s + b.size, 0), failures: [], aborted: null }; };
 
@@ -161,6 +204,17 @@ const handlers = {
   },
   cancel_clean: () => { mockClean.cancel = true; },
   category_tree: () => folderTree(),
+  tag_list: () => tagList(),
+  tag_map_plan: ({ changes, all }) => tagPlan(changes, all).plan,
+  tag_map_save: ({ changes, all }) => {
+    const { plan, map } = tagPlan(changes, all);
+    config.tag_map = map;
+    const ops = plan.moves.map((m) => { const b = byId(m.book_id); const src = b.path; b.prev = { category: b.category, series: b.series, rel_path: b.rel_path, path: b.path };
+      const parts = m.to.split('/'); b.category = parts[0]; b.series = parts[1] || null; b.rel_path = [...parts, b.file_name].join('\\'); b.path = 'E:\\books\\' + b.rel_path;
+      return { id: b.id, kind: 'move', book_id: b.id, src, dst: b.path, size: b.size, status: 'done', message: null, created_at: now }; });
+    if (ops.length) batches.unshift({ id: batches.length + 1, kind: 'tagmap', created_at: Math.floor(Date.now() / 1000), undone_at: null, done: ops.length, failed: 0, bytes: 0, ops });
+    return { batch_id: batches.length, moved: ops.map((o) => ({ book_id: o.book_id, from: o.src, to: o.dst })), failures: [] };
+  },
   unblock_category: ({ rel }) => { const n = config.blocked_categories.length; config.blocked_categories = config.blocked_categories.filter((r) => fold(r) !== fold(rel)); return n !== config.blocked_categories.length; },
   block_category: ({ rel }) => {
     if (!config.blocked_categories.some((r) => fold(r) === fold(rel))) config.blocked_categories.push(rel);
@@ -211,7 +265,7 @@ const handlers = {
   batch_ops: ({ id }) => batches.find((x) => x.id === id).ops,
   evaluate: () => ({ total: 186, correct: 161, high_total: 120, high_correct: 117, medium_total: 48, medium_correct: 38, manual: 18 }),
   report_history: () => [report()],
-  save_config: (a) => { config = { ...a.config, blocked_categories: config.blocked_categories }; },
+  save_config: (a) => { config = { ...a.config, blocked_categories: config.blocked_categories, tag_map: config.tag_map }; },
   pick_folder: () => 'E:\\books',
   set_library: ({ path }) => { config.library_root = path; },
   start_scan: () => {
