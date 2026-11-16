@@ -70,6 +70,8 @@ pub fn phase_label(phase: &str) -> &'static str {
         "hash_full" => "Băm đầy đủ",
         "suspect_hash" => "Băm bổ sung cho nghi trùng",
         "reject_deleted" => "Loại sách đã xoá trước đây",
+        "block" => "Xoá sách thuộc thể loại bị chặn",
+        "block_clean" => "Dọn thư mục bị chặn",
         "analyze" => "Phân tích trùng & thể loại",
         "trash" => "Đưa file vào Thùng rác",
         "refresh" => "Cập nhật số liệu",

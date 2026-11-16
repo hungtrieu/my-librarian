@@ -2,6 +2,10 @@
 //! - đọc `metadata.opf` (tag/tiêu đề/mô tả của Calibre) làm bằng chứng thể loại;
 //! - làm phẳng: mỗi tác phẩm (mọi định dạng cùng tên) chuyển thẳng vào thư mục thể loại;
 //! - biết chắc thể loại → dùng thư mục có sẵn, chưa có thì **tạo mới**; chưa chắc → thư mục `Khác`;
+//! - thư mục thể loại người dùng đã tự chia nhỏ (vd. `Ngôn tình - Đam mỹ/Đam mỹ`, `…/Ngôn tình`, nhiều cấp):
+//!   tác phẩm khớp rõ tên một thư mục con (hoặc từ đồng nghĩa, xem [`SUB_ALIASES`]) đi tiếp vào đó;
+//! - thư mục đích bị chặn (`blocked_categories`, xem `blocked.rs`) → tác phẩm vào thẳng Thùng rác, thư mục không
+//!   bao giờ được tạo lại;
 //! - xong thì đưa MỌI file không phải sách (ảnh bìa, .opf, .db, âm thanh, video…) và mọi thư mục con không còn
 //!   sách vào Thùng rác.
 //!
@@ -419,6 +423,138 @@ fn score(subjects: &str, title: &str, path: &str) -> Vec<(&'static RuleDef, f64)
     out
 }
 
+/// Từ đồng nghĩa cho thư mục con người dùng tự chia trong một thể loại (khoá đã bỏ dấu): (khoá nhóm, từ mạnh,
+/// từ yếu). Thư mục con có tên chứa khoá nhóm (`Đam Mỹ`, `Truyện đam mỹ`…) nhận thêm các từ của nhóm. Từ yếu (chung
+/// chung) chỉ tính nửa điểm, để sách gắn tag "Romance; Đam mỹ" vào `Đam mỹ` chứ không vào `Ngôn tình`.
+const SUB_ALIASES: &[(&str, &[&str], &[&str])] = &[
+    ("dam my", &["dam my", "danmei", "dam mei", "boys love", "boy love", "yaoi"], &[]),
+    ("ngon tinh", &["ngon tinh"], &["romance", "love story", "tong tai", "lang man"]),
+    ("bach hop", &["bach hop", "yuri", "girls love", "girl love"], &[]),
+    ("xuyen khong", &["xuyen khong", "xuyen sach", "xuyen nhanh", "isekai"], &[]),
+    ("trong sinh", &["trong sinh", "reincarnation"], &[]),
+    ("tien hiep", &["tien hiep", "tu tien", "tu chan", "xianxia"], &[]),
+    ("kiem hiep", &["kiem hiep", "vo hiep", "wuxia"], &[]),
+    ("huyen huyen", &["huyen huyen"], &[]),
+];
+/// Số cấp thư mục con tối đa đi xuống bên trong một thư mục thể loại.
+const SUB_DEPTH: usize = 4;
+/// Điểm tối thiểu để vào thư mục con: khớp tag / tiêu đề, hoặc khớp đủ tên ở đường dẫn trong hộp thư đến.
+const SUB_MIN_SCORE: f64 = 1.0;
+
+/// Từ khoá (bỏ dấu, kèm độ mạnh) nhận ra tác phẩm thuộc thư mục con `name`. Tên một từ ngắn (`Thơ`, `Mới`) không tự
+/// làm từ khoá – bỏ dấu dễ nhầm (`tho` = thơ / thờ / thổ) – trừ khi thuộc một nhóm đồng nghĩa.
+fn sub_terms(name: &str) -> Terms {
+    let k = simple_key(name);
+    let k = k.trim_start_matches(|c: char| c.is_ascii_digit() || c == ' ').to_string();
+    let mut v = Vec::new();
+    if k.contains(' ') || k.chars().count() >= 6 {
+        v.push((k.clone(), 1.0));
+    }
+    let padded = format!(" {k} ");
+    for (group, strong, weak) in SUB_ALIASES {
+        if padded.contains(&format!(" {group} ")) {
+            v.extend(strong.iter().map(|w| (w.to_string(), 1.0)));
+            v.extend(weak.iter().map(|w| (w.to_string(), 0.5)));
+        }
+    }
+    v
+}
+
+/// Điểm của tác phẩm cho một thư mục con: mỗi trường (tag ×3, tiêu đề/mô tả ×2, đường dẫn ×1) lấy từ khoá mạnh
+/// nhất khớp nguyên cụm. `fields`: (trọng số, khoá bỏ dấu có khoảng trắng hai đầu).
+fn sub_score(terms: &[(String, f64)], fields: &[(f64, String)]) -> f64 {
+    fields
+        .iter()
+        .map(|(w, text)| {
+            w * terms.iter().filter(|(t, _)| text.contains(&format!(" {t} "))).map(|(_, s)| *s).fold(0.0, f64::max)
+        })
+        .sum()
+}
+
+/// Từ khoá (bỏ dấu) kèm độ mạnh.
+type Terms = Vec<(String, f64)>;
+/// Thư mục con (tên) kèm từ khoá của nó.
+type SubDirs = Vec<(String, Terms)>;
+
+/// Thư mục con trực tiếp của `dir` (tên), kèm từ khoá của từng cái.
+fn sub_dirs(dir: &Path) -> SubDirs {
+    let mut v: SubDirs = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !n.starts_with('.') && !n.starts_with('$'))
+        .map(|n| {
+            crate::progress::pulse();
+            let t = sub_terms(&n);
+            (n, t)
+        })
+        .collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
+/// Đi xuống các thư mục con (người dùng tự chia, tối đa [`SUB_DEPTH`] cấp) của thư mục thể loại `top` khi tác phẩm
+/// khớp rõ một thư mục con; tính cả thư mục con bị chặn đã không còn trên đĩa. Hoà điểm: có thư mục bị chặn thì
+/// chọn nó (người dùng đã nói không muốn thể loại đó), không thì dừng ở cấp hiện tại.
+fn descend(
+    root: &Path,
+    top: &Path,
+    u: &Unit,
+    blocked: &crate::blocked::Blocked,
+    cache: &mut HashMap<PathBuf, SubDirs>,
+) -> PathBuf {
+    let mut dir = top.to_path_buf();
+    let mut fields: Option<Vec<(f64, String)>> = None;
+    for _ in 0..SUB_DEPTH {
+        let keys = crate::blocked::dir_keys(root, &dir);
+        let mut subs = cache.entry(dir.clone()).or_insert_with(|| sub_dirs(&dir)).clone();
+        for b in blocked.children(&keys) {
+            let k = crate::blocked::name_key(&b);
+            if !subs.iter().any(|(n, _)| crate::blocked::name_key(n) == k) {
+                let t = sub_terms(&b);
+                subs.push((b, t));
+            }
+        }
+        if subs.iter().all(|(_, t)| t.is_empty()) {
+            break;
+        }
+        let f = fields.get_or_insert_with(|| {
+            [(3.0, &u.subjects), (2.0, &u.title), (1.0, &u.path)]
+                .into_iter()
+                .filter(|(_, t)| !t.trim().is_empty())
+                .map(|(w, t)| (w, format!(" {} ", simple_key(t))))
+                .collect()
+        });
+        // (điểm, bị chặn, tên); `tie`: hai thư mục cùng hạng tốt nhất → không chắc.
+        let mut best: Option<(f64, bool, &str)> = None;
+        let mut tie = false;
+        for (n, terms) in &subs {
+            let s = sub_score(terms, f);
+            if s < SUB_MIN_SCORE {
+                continue;
+            }
+            let mut k = keys.clone();
+            k.push(crate::blocked::name_key(n));
+            let is_blocked = blocked.covers(&k);
+            match best {
+                Some((bs, bb, _)) if s < bs || (s == bs && bb && !is_blocked) => {}
+                Some((bs, bb, _)) if s == bs && bb == is_blocked => tie = true,
+                _ => {
+                    best = Some((s, is_blocked, n));
+                    tie = false;
+                }
+            }
+        }
+        match best {
+            Some((_, _, n)) if !tie => dir = dir.join(n),
+            _ => break,
+        }
+    }
+    dir
+}
+
 /// Thể loại chắc chắn (hoặc `None` → "Khác").
 fn decide(subjects: &str, title: &str, path: &str) -> Option<&'static RuleDef> {
     let sc = score(subjects, title, path);
@@ -588,6 +724,10 @@ pub struct TriageReport {
     /// File không phải sách (ảnh, âm thanh, video, .opf…) đã vào Thùng rác lẻ (ngoài các thư mục bị xoá cả cụm).
     pub junk_files_trashed: usize,
     pub dirs_trashed: usize,
+    /// File sách thuộc thể loại bị chặn đã vào thẳng Thùng rác (dry-run: số file sẽ vào).
+    pub blocked_trashed: usize,
+    /// Số tác phẩm theo thư mục bị chặn (`A/B` như trong cấu hình).
+    pub blocked: BTreeMap<String, usize>,
     pub failures: Vec<String>,
     /// Bị huỷ giữa chừng (các tác phẩm đã chuyển vẫn giữ nguyên).
     pub cancelled: bool,
@@ -757,8 +897,7 @@ pub fn bucket_other(cfg: &Config, opts: &TriageOptions) -> Result<BucketReport> 
         return Err(Error::ReadOnly);
     }
     let mut rep = BucketReport { dry_run: opts.dry_run, ..Default::default() };
-    let Some(other) =
-        classify::list_categories(cfg)?.into_iter().find(|c| is_other_dir(&c.name)).map(|c| c.path)
+    let Some(other) = classify::list_categories(cfg)?.into_iter().find(|c| is_other_dir(&c.name)).map(|c| c.path)
     else {
         return Ok(rep);
     };
@@ -865,6 +1004,15 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
     }
     let mut cats: Vec<(String, PathBuf)> =
         classify::list_categories(cfg)?.into_iter().map(|c| (c.name, c.path)).collect();
+    // Thể loại bị chặn mà thư mục đã được dọn khỏi đĩa: vẫn là "thư mục có sẵn" của luật tương ứng, để sách cùng
+    // thể loại được nhận ra (và vào Thùng rác) thay vì tạo lại thư mục theo tên mặc định.
+    let blocked = crate::blocked::Blocked::new(cfg);
+    for name in blocked.top_levels() {
+        let k = crate::blocked::name_key(&name);
+        if !cats.iter().any(|(n, _)| crate::blocked::name_key(n) == k) {
+            cats.push((name.clone(), root.join(&name)));
+        }
+    }
 
     let report = |done: usize, total: usize| {
         if let Some(f) = opts.progress {
@@ -955,6 +1103,8 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
     let mut tx = conn.map(crate::db::write_tx).transpose()?;
     let mut listings: HashMap<PathBuf, DirListing> = HashMap::new();
     let mut shelves: Option<Shelves> = None;
+    let mut sub_cache: HashMap<PathBuf, SubDirs> = HashMap::new();
+    let mut created: HashSet<PathBuf> = HashSet::new();
     for (ci, chunk) in units.chunks(MOVE_CHUNK).enumerate() {
         let start = ci * MOVE_CHUNK;
         if start > 0 {
@@ -971,7 +1121,10 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
         // a) Lên kế hoạch (tuần tự, chỉ trong bộ nhớ): thư mục đích, bản trùng, tên không đụng hàng.
         let mut to_move: Vec<(&Path, PathBuf)> = Vec::new();
         let mut dups: Vec<(&Path, PathBuf, u64)> = Vec::new();
+        // (file, thư mục bị chặn) → Thùng rác.
+        let mut to_block: Vec<(&Path, String)> = Vec::new();
         for (k, u) in chunk.iter().enumerate() {
+            crate::progress::pulse();
             rep.units += 1;
             let (label, cat_dir) = match decisions[start + k] {
                 Some(def) => {
@@ -992,14 +1145,34 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
                 }
             };
             let is_other = decisions[start + k].is_none();
+            // Thư mục con người dùng tự chia (nhiều cấp) – kể cả thư mục con bị chặn đã dọn khỏi đĩa.
+            let dest_dir =
+                if is_other { cat_dir.clone() } else { descend(root, &cat_dir, u, &blocked, &mut sub_cache) };
+            if !is_other && !blocked.is_empty() {
+                let keys = crate::blocked::dir_keys(root, &dest_dir);
+                if let Some(rel) = blocked.entry_for(&keys) {
+                    // Thể loại bị chặn: không chuyển, không tạo thư mục – vào thẳng Thùng rác.
+                    *rep.blocked.entry(rel.to_string()).or_default() += 1;
+                    for (f, _) in &u.files {
+                        if opts.dry_run {
+                            rep.blocked_trashed += 1;
+                        } else {
+                            to_block.push((f, rel.to_string()));
+                        }
+                    }
+                    continue;
+                }
+            }
             *rep.by_category.entry(label.clone()).or_default() += 1;
-            if !cat_dir.is_dir() && !cats.iter().any(|(_, p)| *p == cat_dir) {
+            if !cat_dir.is_dir() && created.insert(cat_dir.clone()) {
                 // Thể loại chưa có thư mục: tạo mới.
                 if !opts.dry_run {
                     std::fs::create_dir_all(&cat_dir)?;
                 }
                 rep.created_dirs.push(label.clone());
-                cats.push((label.clone(), cat_dir.clone()));
+                if !cats.iter().any(|(_, p)| *p == cat_dir) {
+                    cats.push((label.clone(), cat_dir.clone()));
+                }
             }
             if is_other {
                 // `Khác`: vào ngăn của chữ cái đầu (mọi định dạng của tác phẩm vào cùng một ngăn).
@@ -1027,7 +1200,6 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
                 }
                 continue;
             }
-            let dest_dir = cat_dir;
             if !listings.contains_key(&dest_dir) {
                 // Lần đầu gặp thư mục đích này: đọc danh sách file một lần.
                 crate::progress::working_on(&dest_dir);
@@ -1083,6 +1255,23 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
                     rep.duplicates_trashed += 1;
                     if let Some(t) = tx.as_ref() {
                         sync_db(t, cfg, f, None);
+                    }
+                }
+                Err(e) => rep.failures.push(format!("{}: {e}", f.display())),
+            }
+        }
+        // d) Thể loại bị chặn → Thùng rác (ghi nhật ký `to: null` để biết vì sao file biến mất).
+        for (f, rel) in to_block {
+            crate::progress::working_on(f);
+            match trasher.trash(f) {
+                Ok(()) => {
+                    rep.blocked_trashed += 1;
+                    if let Some(t) = tx.as_ref() {
+                        sync_db(t, cfg, f, None);
+                    }
+                    if let Some(j) = journal.as_mut() {
+                        let line = serde_json::json!({"from": f.to_string_lossy(), "to": null, "blocked": rel});
+                        let _ = writeln!(j, "{line}");
                     }
                 }
                 Err(e) => rep.failures.push(format!("{}: {e}", f.display())),
@@ -1242,7 +1431,10 @@ mod tests {
         assert!(root.join("Thơ/Tập thơ xuân - Nguyễn A.epub").is_file(), "dùng thư mục có sẵn");
         assert!(root.join("Thơ/Tập thơ xuân - Nguyễn A.pdf").is_file(), "mọi định dạng cùng chuyển");
         assert!(root.join("Trinh thám - Hình sự/Vụ án bí ẩn - Trần B.mobi").is_file(), "tạo thư mục mới");
-        assert!(root.join("Khác/S/S-01/Sách không rõ - Lê C.epub").is_file(), "chưa chắc → Khác, ngăn theo chữ cái đầu");
+        assert!(
+            root.join("Khác/S/S-01/Sách không rõ - Lê C.epub").is_file(),
+            "chưa chắc → Khác, ngăn theo chữ cái đầu"
+        );
         assert_eq!(rep.to_other, 1);
         assert!(!inbox.join("Calibre Library").exists(), "thư mục con đã vào Thùng rác");
         assert!(!inbox.join("loose.opf").exists());
@@ -1330,6 +1522,76 @@ mod tests {
         for k in [1, 3, 4, 5, 6] {
             assert!(root.join(format!("Thơ/Tập thơ ({k}).epub")).is_file(), "thiếu ({k})");
         }
+    }
+
+    #[test]
+    fn goes_into_matching_user_subfolders() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        let cfg = Config { library_root: Some(root.to_path_buf()), ..Config::default() };
+        let parent = root.join("5. Ngôn Tình - Đam Mỹ");
+        std::fs::create_dir_all(parent.join("Đam Mỹ")).unwrap();
+        std::fs::create_dir_all(parent.join("Ngôn Tình/Hiện đại")).unwrap();
+        std::fs::create_dir_all(parent.join("Mới")).unwrap(); // tên một từ ngắn: không phải từ khoá
+        let inbox = root.join("Chưa phân loại");
+        for (name, tag) in [
+            ("A", "Đam mỹ"),
+            ("B", "Romance; Đam mỹ"),
+            ("C", "Ngôn tình"),
+            ("D", "Ngôn tình; Hiện đại"),
+            ("E", "Ngôn tình; Đam mỹ"),
+            ("F", "Danmei; Lãng mạn"),
+        ] {
+            write(&inbox.join(name).join(format!("{name}.epub")), name.as_bytes());
+            write(&inbox.join(name).join("metadata.opf"), opf(tag, &format!("Truyện mới {name}")).as_bytes());
+        }
+        let fake = Fake(RefCell::new(vec![]));
+        let rep = run(&cfg, &fake, &TriageOptions::default()).unwrap();
+        assert!(rep.failures.is_empty(), "{:?}", rep.failures);
+        assert!(rep.created_dirs.is_empty(), "dùng thư mục có số thứ tự sẵn có: {:?}", rep.created_dirs);
+        assert!(parent.join("Đam Mỹ/A.epub").is_file(), "tag khớp tên thư mục con");
+        assert!(parent.join("Đam Mỹ/B.epub").is_file(), "romance chỉ là từ yếu của Ngôn tình");
+        assert!(parent.join("Ngôn Tình/C.epub").is_file());
+        assert!(parent.join("Ngôn Tình/Hiện đại/D.epub").is_file(), "đi xuống nhiều cấp");
+        assert!(parent.join("E.epub").is_file(), "hoà điểm, không mục nào bị chặn → để ở thư mục thể loại");
+        assert!(parent.join("Đam Mỹ/F.epub").is_file(), "từ đồng nghĩa");
+        assert!(std::fs::read_dir(parent.join("Mới")).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn blocked_genre_goes_to_trash_and_is_never_recreated() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        let mut cfg = Config { library_root: Some(root.to_path_buf()), ..Config::default() };
+        // Thư mục con bị chặn đã được dọn khỏi đĩa, chỉ còn "Ngôn tình".
+        std::fs::create_dir_all(root.join("Ngôn tình - Đam mỹ/Ngôn tình")).unwrap();
+        cfg.blocked_categories = vec!["Ngôn tình - Đam mỹ/Đam mỹ".into(), "8. Trinh Thám".into()];
+        let inbox = root.join("Chưa phân loại");
+        for (name, tag) in
+            [("A", "Đam mỹ"), ("B", "Ngôn tình; Đam mỹ"), ("C", "Ngôn tình"), ("D", "Trinh thám"), ("E", "Thơ")]
+        {
+            write(&inbox.join(name).join(format!("{name}.epub")), name.as_bytes());
+            write(&inbox.join(name).join(format!("{name}.pdf")), name.as_bytes());
+            write(&inbox.join(name).join("metadata.opf"), opf(tag, name).as_bytes());
+        }
+        let fake = Fake(RefCell::new(vec![]));
+        let dry = run(&cfg, &fake, &TriageOptions { dry_run: true, ..Default::default() }).unwrap();
+        assert_eq!(dry.blocked_trashed, 6, "{dry:?}");
+        assert!(fake.0.borrow().is_empty(), "dry-run không xoá");
+        let journal = root.join("j.jsonl");
+        let rep = run(&cfg, &fake, &TriageOptions { journal: Some(&journal), ..Default::default() }).unwrap();
+        assert!(rep.failures.is_empty(), "{:?}", rep.failures);
+        assert_eq!(rep.blocked_trashed, 6);
+        assert_eq!(rep.blocked.get("Ngôn tình - Đam mỹ/Đam mỹ"), Some(&2), "{:?}", rep.blocked);
+        assert_eq!(rep.blocked.get("8. Trinh Thám"), Some(&1), "luật Trinh thám nhận ra thư mục bị chặn có số thứ tự");
+        assert!(!root.join("Ngôn tình - Đam mỹ/Đam mỹ").exists(), "không tạo lại thư mục con bị chặn");
+        assert!(!root.join("8. Trinh Thám").exists() && !root.join("Trinh thám - Hình sự").exists());
+        assert!(root.join("Ngôn tình - Đam mỹ/Ngôn tình/C.epub").is_file());
+        assert!(root.join("Thơ/E.pdf").is_file(), "thể loại khác vẫn tạo mới như thường");
+        assert!(!rep.by_category.contains_key("8. Trinh Thám"));
+        let blocked_lines =
+            std::fs::read_to_string(&journal).unwrap().lines().filter(|l| l.contains("\"blocked\"")).count();
+        assert_eq!(blocked_lines, 6);
     }
 
     #[test]

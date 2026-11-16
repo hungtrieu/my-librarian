@@ -7,6 +7,8 @@
 pub mod backup;
 #[cfg(feature = "desktop")]
 pub mod bench;
+#[cfg(feature = "desktop")]
+pub mod blocked;
 pub mod browse;
 #[cfg(feature = "desktop")]
 pub mod classify;

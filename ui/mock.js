@@ -30,6 +30,9 @@ add({ title: 'Mắt Biếc', authors: 'Nguyễn Nhật Ánh', category: 'Văn h�
 for (const [s, n, fmt] of [['Doraemon', 45, 'cbz'], ['7 seeds', 35, 'mobi'], ['One Piece', 105, 'cbz'], ['Conan', 100, 'cbz'], ['Slam Dunk', 31, 'mobi']]) {
   for (let v = 1; v <= n; v++) add({ title: `${s} ${v}`, file_name: `${s} ${v}.${fmt}`, category: 'truyen tranh', series: s, volume: v, format: fmt, page_count: 180 + (v % 20), read_status: s === 'Doraemon' && v <= 12 ? 'read' : 'unread' });
 }
+// Thể loại người dùng tự chia thư mục con (để thử chặn một phần: chỉ “Đam mỹ”).
+for (let i = 1; i <= 8; i++) add({ title: `Đam mỹ mẫu ${i}`, category: 'Ngôn tình - Đam mỹ', series: 'Đam mỹ' });
+for (let i = 1; i <= 12; i++) add({ title: `Ngôn tình mẫu ${i}`, category: 'Ngôn tình - Đam mỹ', series: 'Ngôn tình' });
 for (let i = 1; i <= 160; i++) add({ title: `Sách mẫu số ${i}`, authors: `Tác giả ${i % 23}`, category: ['Văn học', 'Công nghệ', 'Tiểu sử - Hồi ký'][i % 3], format: ['epub', 'pdf', 'mobi', 'fb2', 'djvu'][i % 5] });
 const inbox = [add({ title: 'Mắt Biếc', file_name: 'Mắt Biếc (1).epub', authors: 'Nguyễn Nhật Ánh', category: 'Chưa phân loại', in_inbox: true }),
   add({ title: 'Mat Biec', file_name: 'Mat Biec.pdf', category: 'Chưa phân loại', in_inbox: true, format: 'pdf', size: 15800000 }),
@@ -41,7 +44,7 @@ add({ title: 'Sách hỏng', file_name: 'Sách hỏng.epub', category: 'Văn h�
 add({ title: 'Sách Kindle mua', authors: 'Amazon', category: 'Văn học', format: 'azw3', drm: true });
 const byId = (id) => books.find((b) => b.id === id);
 const present = () => books.filter((b) => !b.gone);
-let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_clean_exact_in_background: false, auto_triage: true, auto_reject_deleted: true, classify_high: 75, classify_medium: 45, hash_threads: 3, scan_time: '03:00' };
+let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_clean_exact_in_background: false, auto_triage: true, auto_reject_deleted: true, blocked_categories: [], classify_high: 75, classify_medium: 45, hash_threads: 3, scan_time: '03:00' };
 const decided = new Set();
 const TEXT = new Set(['epub', 'mobi', 'prc', 'azw', 'azw3', 'kf8', 'fb2', 'txt']);
 // Hai thiết bị mẫu; ?nodevices=1 để xem lúc chưa ghép.
@@ -107,8 +110,25 @@ function query(q) {
   if (!q.series && !q.work) items.sort(cmp);
   return { total: items.length, offset: q.offset || 0, items: items.slice(q.offset || 0, (q.offset || 0) + (q.limit || 200)) };
 }
-const cats = () => ['Công nghệ', 'Tiểu sử - Hồi ký', 'Văn học', 'truyen tranh'].map((name) => ({ name, books: present().filter((b) => b.category === name).length,
-  series_dirs: name === 'truyen tranh' ? ['7 seeds', 'Conan', 'Doraemon', 'One Piece', 'Slam Dunk'] : [], path: 'E:\\books\\' + name }));
+const isBlocked = (rel) => config.blocked_categories.some((r) => fold(rel) === fold(r) || fold(rel).startsWith(fold(r) + '/'));
+const cats = () => ['Công nghệ', 'Ngôn tình - Đam mỹ', 'Tiểu sử - Hồi ký', 'Văn học', 'truyen tranh'].filter((name) => !isBlocked(name)).map((name) => ({ name, books: present().filter((b) => b.category === name).length,
+  series_dirs: name === 'truyen tranh' ? ['7 seeds', 'Conan', 'Doraemon', 'One Piece', 'Slam Dunk'] : name === 'Ngôn tình - Đam mỹ' ? ['Đam mỹ', 'Ngôn tình'].filter((s) => !isBlocked(name + '/' + s)) : [], path: 'E:\\books\\' + name }));
+/** Cây thư mục thể loại (giống blocked::folder_tree): từ đường dẫn sách + mục bị chặn đã dọn. */
+function folderTree() {
+  const m = new Map();
+  for (const b of present()) {
+    const parts = b.rel_path.split('\\').slice(0, -1);
+    if (!parts.length || fold(parts[0]) === fold(config.inbox_name)) continue;
+    for (let d = 1; d <= Math.min(parts.length, 3); d++) {
+      const rel = parts.slice(0, d).join('/');
+      const n = m.get(rel) || { rel, name: parts[d - 1], depth: d, books: 0, blocked: isBlocked(rel), exists: true };
+      n.books++;
+      m.set(rel, n);
+    }
+  }
+  for (const rel of config.blocked_categories) if (![...m.keys()].some((k) => fold(k) === fold(rel))) m.set(rel, { rel, name: rel.split('/').pop(), depth: rel.split('/').length, books: 0, blocked: true, exists: false });
+  return [...m.values()].sort((a, b) => fold(a.rel).localeCompare(fold(b.rel)));
+}
 const trash = (ids) => { const t = ids.map(byId).filter(Boolean); t.forEach((b) => { b.gone = true; }); batches.unshift({ id: batches.length + 1, kind: 'trash', created_at: Math.floor(Date.now() / 1000), undone_at: null, done: t.length, failed: 0, bytes: t.reduce((s, b) => s + b.size, 0), ops: t.map((b) => ({ id: b.id, kind: 'trash', src: b.path, dst: null, status: 'done' })) });
   return { batch_id: batches.length, trashed: t.length, freed_bytes: t.reduce((s, b) => s + b.size, 0), failures: [], aborted: null }; };
 
@@ -140,6 +160,26 @@ const handlers = {
     }, 120);
   },
   cancel_clean: () => { mockClean.cancel = true; },
+  category_tree: () => folderTree(),
+  unblock_category: ({ rel }) => { const n = config.blocked_categories.length; config.blocked_categories = config.blocked_categories.filter((r) => fold(r) !== fold(rel)); return n !== config.blocked_categories.length; },
+  block_category: ({ rel }) => {
+    if (!config.blocked_categories.some((r) => fold(r) === fold(rel))) config.blocked_categories.push(rel);
+    const prefix = fold(rel.split('/').join('\\') + '\\');
+    const ids = present().filter((b) => fold(b.rel_path).startsWith(prefix)).map((b) => b.id);
+    let done = 0;
+    mockClean.cancel = false;
+    emit('clean-progress', { phase: 'block', done, total: ids.length });
+    const t = setInterval(() => {
+      if (mockClean.cancel) { clearInterval(t); emit('clean-done', { ok: true, report: { ...trash(ids.slice(0, done)), cancelled: true } }); return; }
+      done = Math.min(ids.length, done + 1);
+      emit('clean-progress', { phase: 'block', done, total: ids.length });
+      if (done >= ids.length) {
+        clearInterval(t);
+        emit('clean-progress', { phase: 'block_clean', done: 0, total: 1 });
+        setTimeout(() => { const r = trash(ids); batches[0].kind = 'block'; emit('clean-done', { ok: true, report: { ...r, cancelled: false } }); }, 300);
+      }
+    }, 120);
+  },
   suspect_groups: suspects,
   start_clean_suspects: () => { setTimeout(() => emit('clean-done', { ok: true, report: { batch_id: 1, trashed: 0, freed_bytes: 0, failures: [], aborted: null, cancelled: false } }), 300); },
   decide: () => { decided.add('mb'); return 1; },
@@ -171,7 +211,7 @@ const handlers = {
   batch_ops: ({ id }) => batches.find((x) => x.id === id).ops,
   evaluate: () => ({ total: 186, correct: 161, high_total: 120, high_correct: 117, medium_total: 48, medium_correct: 38, manual: 18 }),
   report_history: () => [report()],
-  save_config: (a) => { config = a.config; },
+  save_config: (a) => { config = { ...a.config, blocked_categories: config.blocked_categories }; },
   pick_folder: () => 'E:\\books',
   set_library: ({ path }) => { config.library_root = path; },
   start_scan: () => {

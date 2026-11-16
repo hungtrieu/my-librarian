@@ -115,10 +115,26 @@ fn every_phase_is_reported_and_stalls_are_caught() {
     .unwrap();
     assert!(triage.dirs_trashed > 0, "phải có thư mục rỗng để dọn: {triage:?}");
     let st = report::run_analysis_with(&lib.conn, &lib.config, "app", Some(&cancel), None, Some(&on)).unwrap();
-    assert!(wd.finish().is_none(), "bước chậm nhưng vẫn chạy không được coi là treo");
     assert!(!st.scan.cancelled);
+    // Chặn thư mục "Thơ" (đã có sách sau phân loại): xoá từng sách chậm vẫn có nhịp, bước dọn thư mục có tên.
+    let mut cfg = lib.config.clone();
+    let rel = librarian_core::blocked::add(&mut cfg, "Thơ").unwrap();
+    let b = librarian_core::blocked::enforce(&lib.conn, &cfg, &slow, Some(&rel), Some(&cancel), Some(&on)).unwrap();
+    assert!(b.trashed > 0 && b.failures.is_empty(), "{b:?}");
+    assert!(wd.finish().is_none(), "bước chậm nhưng vẫn chạy không được coi là treo");
     let seen = phases.into_inner();
-    for p in ["count", "scan", "triage", "triage_read", "triage_clean", "hash_quick", "hash_full", "analyze"] {
+    for p in [
+        "count",
+        "scan",
+        "triage",
+        "triage_read",
+        "triage_clean",
+        "hash_quick",
+        "hash_full",
+        "analyze",
+        "block",
+        "block_clean",
+    ] {
         assert!(seen.contains(p), "bước {p} không báo tiến trình; đã thấy {seen:?}");
     }
     for p in &seen {

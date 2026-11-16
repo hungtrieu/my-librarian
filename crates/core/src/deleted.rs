@@ -29,7 +29,7 @@ const MARKER: &str = "reject_deleted_after";
 
 /// Loại lô xoá được ghi vào sổ.
 pub fn remembers(kind: &str) -> bool {
-    matches!(kind, "trash" | "dedupe_suspect" | REJECT_KIND)
+    matches!(kind, "trash" | "dedupe_suspect" | REJECT_KIND | crate::blocked::BLOCK_KIND)
 }
 
 /// Ghi một cuốn vừa vào Thùng rác. `quick`: băm nhanh của file (tính ngay trước khi xoá).

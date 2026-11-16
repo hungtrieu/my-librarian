@@ -27,6 +27,10 @@ pub struct Config {
     /// Mỗi lần quét, sách mới tải về có nội dung y hệt một cuốn đã xoá trước đây (xem deleted.rs) được tự đưa vào
     /// Thùng rác. Mặc định BẬT.
     pub auto_reject_deleted: bool,
+    /// Thư mục thể loại bị chặn (đường dẫn tương đối so với `library_root`, phân cách `/`, có thể là thư mục con
+    /// người dùng tự chia, vd. `Ngôn tình - Đam mỹ/Đam mỹ`). Sách trong đó vào Thùng rác; sách tự phân loại vào đó
+    /// cũng vậy, và thư mục không được tạo lại. Xem `blocked.rs`.
+    pub blocked_categories: Vec<String>,
     /// Ngưỡng tin cậy phân loại (E6-04).
     pub classify_high: u8,
     pub classify_medium: u8,
@@ -47,6 +51,7 @@ impl Default for Config {
             auto_clean_exact_in_background: false,
             auto_triage: true,
             auto_reject_deleted: true,
+            blocked_categories: Vec::new(),
             classify_high: 75,
             classify_medium: 45,
             hash_threads: 3,

@@ -317,3 +317,11 @@ body.dragging #nav .nav-item:not([data-drop]) { opacity: 0.5; }
 .drag-ghost .txt b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drag-ghost .txt span { color: var(--text-2); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drag-ghost .n { position: absolute; top: -8px; right: -8px; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; background: var(--danger); color: #fff; font-size: 12px; font-weight: 700; display: grid; place-items: center; }
+
+/* Thể loại bị chặn: cây thư mục trong hộp chọn + danh sách ở Cài đặt */
+.modal:has(.block-tree) { width: min(580px, 100%); }
+.block-tree { max-height: min(55vh, 520px); overflow: auto; margin: 0 0 16px; border: 1px solid var(--line); border-radius: 10px; }
+.block-tree .block-row + .block-row { border-top: 1px solid var(--line); }
+.block-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; min-height: 34px; }
+.block-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.block-row.is-blocked .grow { color: var(--text-2); text-decoration: line-through; }

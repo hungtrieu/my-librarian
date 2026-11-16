@@ -33,6 +33,9 @@ pub struct ReportStats {
     /// `auto_reject_deleted`).
     #[serde(default)]
     pub auto_rejected: Option<usize>,
+    /// Số file sách thuộc thể loại bị chặn đã tự đưa vào Thùng rác (từ hộp thư đến + thư mục bị chặn còn trên đĩa).
+    #[serde(default)]
+    pub auto_blocked: Option<usize>,
 }
 
 /// Quét + băm + phát hiện trùng + đếm sách chờ phân loại. Lưu kết quả vào `scan_reports`.
@@ -59,6 +62,7 @@ pub fn run_analysis_with(
     let is_cancelled = || cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
     // Phân loại tự động hộp thư đến TRƯỚC khi quét, để lần quét thấy ngay vị trí mới.
     let mut auto_triaged = None;
+    let mut auto_blocked = 0usize;
     if cfg.auto_triage && !cfg.read_only && !is_cancelled() {
         let journal = crate::config::default_home().join("triage-journal.jsonl");
         match crate::triage::run(
@@ -84,7 +88,11 @@ pub fn run_analysis_with(
                 for f in &r.failures {
                     tracing::warn!("tự phân loại: {f}");
                 }
+                for (rel, n) in &r.blocked {
+                    tracing::info!("tự phân loại: {n} tác phẩm thuộc thể loại bị chặn “{rel}” vào Thùng rác");
+                }
                 auto_triaged = Some(r.moved_files);
+                auto_blocked += r.blocked_trashed;
             }
             Err(e) => tracing::warn!("tự phân loại lỗi: {e}"),
         }
@@ -124,8 +132,26 @@ pub fn run_analysis_with(
         &ScanOptions { cancel, progress: on.map(|_| &scan_cb as &dyn Fn(&scan::ScanProgress)), kind: Some(kind) },
     )?;
     let mut st = ReportStats { scan: summary.clone(), auto_triaged, ..Default::default() };
+    // Thư mục bị chặn còn sách trên đĩa (lần chặn trước dừng giữa chừng, hoặc thư mục được tạo lại bằng tay): dọn tiếp.
+    if !summary.cancelled && !cfg.read_only && !cfg.blocked_categories.is_empty() {
+        let r =
+            crate::blocked::enforce(conn, cfg, auto_clean.unwrap_or(&crate::trash::SystemTrasher), None, cancel, on)?;
+        if r.trashed > 0 || !r.failures.is_empty() {
+            tracing::info!("thể loại bị chặn: {} sách vào Thùng rác, {} lỗi", r.trashed, r.failures.len());
+        }
+        for f in &r.failures {
+            tracing::warn!("thể loại bị chặn: {}: {}", f.path, f.message);
+        }
+        auto_blocked += r.trashed;
+        if r.cancelled {
+            st.scan.cancelled = true;
+        }
+    }
+    if auto_blocked > 0 || !cfg.blocked_categories.is_empty() {
+        st.auto_blocked = Some(auto_blocked);
+    }
     // Sách đã xoá trước đây mà lại được tải về (nội dung y hệt): đưa thẳng vào Thùng rác, trước khi băm / tìm trùng.
-    if !summary.cancelled && cfg.auto_reject_deleted && !cfg.read_only {
+    if !st.scan.cancelled && cfg.auto_reject_deleted && !cfg.read_only {
         let r =
             crate::deleted::reject_known(conn, cfg, auto_clean.unwrap_or(&crate::trash::SystemTrasher), cancel, on)?;
         if r.trash.trashed > 0 || !r.trash.failures.is_empty() {
@@ -309,6 +335,9 @@ pub fn banner(r: &Report) -> Option<String> {
     }
     if let Some(n) = s.auto_rejected.filter(|&n| n > 0) {
         parts.push(format!("{n} sách đã xoá trước đây bị tải lại – đã tự đưa vào Thùng rác"));
+    }
+    if let Some(n) = s.auto_blocked.filter(|&n| n > 0) {
+        parts.push(format!("{n} sách thuộc thể loại bị chặn – đã tự đưa vào Thùng rác"));
     }
     let mut out = String::new();
     let label = if r.kind == "background" { "lần quét ngầm" } else { "lần quét" };

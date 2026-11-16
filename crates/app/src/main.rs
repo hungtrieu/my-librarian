@@ -5,6 +5,7 @@
 //! hỗ trợ HTTP Range (PDF chỉ tải phần cần), và từng trang ảnh của truyện CBZ/CBR.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use librarian_core::blocked;
 use librarian_core::browse::{self, Page, Query};
 use librarian_core::classify::{self, Proposal};
 use librarian_core::covers::CoverCache;
@@ -189,7 +190,10 @@ async fn set_library(state: State<'_, AppState>, path: String) -> CmdResult<()> 
 #[tauri::command]
 async fn save_config(state: State<'_, AppState>, config: Config) -> CmdResult<()> {
     with_lib(&state.lib, move |lib| {
+        // Danh sách chặn chỉ đổi qua block_category / unblock_category (form Cài đặt có thể giữ bản cũ).
+        let blocked = std::mem::take(&mut lib.config.blocked_categories);
         lib.config = config;
+        lib.config.blocked_categories = blocked;
         if let Some(r) = lib.config.library_root.clone() {
             db::ensure_root(&lib.conn, &r.to_string_lossy(), "library")?;
         }
@@ -501,6 +505,45 @@ async fn retitle_books(
     let opts = RetitleOptions { rename_file, write_content };
     with_lib(&state.lib, move |lib| {
         refreshed(lib, |lib| retitle::retitle_books(&lib.conn, &lib.config, &SystemTrasher, &ids, &title, opts))
+    })
+    .await
+}
+
+// ------------------------------------------------------------------ thể loại bị chặn
+
+/// Cây thư mục thể loại (3 cấp) kèm số sách và trạng thái chặn – để chọn thư mục cần chặn.
+#[tauri::command]
+async fn category_tree(state: State<'_, AppState>) -> CmdResult<Vec<blocked::FolderNode>> {
+    with_lib(&state.lib, |lib| blocked::folder_tree(&lib.conn, &lib.config, 3)).await
+}
+
+/// Chặn thư mục `rel` (`A/B`): lưu vào cấu hình rồi đưa mọi sách trong đó (và chính thư mục) vào Thùng rác ở nền –
+/// cùng hộp tiến trình / giám sát treo / nút Dừng như dọn trùng. Từ đó sách tự phân loại vào đó cũng vào Thùng rác.
+#[tauri::command]
+async fn block_category(app: AppHandle, state: State<'_, AppState>, rel: String) -> CmdResult<()> {
+    if busy_kind(&state).is_some() {
+        return Err("Đang quét hoặc dọn trùng – đợi xong rồi chặn".into());
+    }
+    let rel = with_lib(&state.lib, move |lib| {
+        let rel = blocked::add(&mut lib.config, &rel)?;
+        lib.save_config()?;
+        Ok(rel)
+    })
+    .await?;
+    spawn_clean(app, state, move |lib, cancel, on| {
+        blocked::enforce(&lib.conn, &lib.config, &SystemTrasher, Some(&rel), Some(cancel), Some(on))
+    })
+}
+
+/// Bỏ chặn `rel` (sách đã xoá vẫn nằm trong Thùng rác Windows, khôi phục được).
+#[tauri::command]
+async fn unblock_category(state: State<'_, AppState>, rel: String) -> CmdResult<bool> {
+    with_lib(&state.lib, move |lib| {
+        let removed = blocked::remove(&mut lib.config, &rel);
+        if removed {
+            lib.save_config()?;
+        }
+        Ok(removed)
     })
     .await
 }
@@ -1511,6 +1554,9 @@ fn main() {
             open_recycle_bin,
             trash_books,
             retitle_books,
+            category_tree,
+            block_category,
+            unblock_category,
             exact_groups,
             start_clean_exact,
             cancel_clean,

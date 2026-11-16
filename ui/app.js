@@ -103,7 +103,17 @@ function renderNav() {
   if (ov.categories.length) {
     nav.push(h('div', { class: 'nav-section' }, 'Bộ sưu tập'));
     const inboxKey = fold(ov.config.inbox_name);
-    for (const c of ov.categories) if (fold(c.name) !== inboxKey) nav.push(navItem(c.name, '▤', { name: 'library', scope: 'category', category: c.name }, c.books, null, c));
+    for (const c of ov.categories) {
+      if (fold(c.name) === inboxKey) continue;
+      const el = navItem(c.name, '▤', { name: 'library', scope: 'category', category: c.name }, c.books, null, c);
+      if (fold(c.name) !== fold('Khác')) {
+        el.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          showMenu(e.clientX, e.clientY, [{ label: `Chặn “${c.name}” hoặc thư mục con…`, danger: true, run: () => openBlockPicker(c.name) }]);
+        });
+      }
+      nav.push(el);
+    }
   }
   nav.push(h('div', { class: 'nav-section' }, 'Dọn dẹp'),
     navItem('Trùng chắc chắn', '⧉', { name: 'dupes' }, null, st?.exact_files || null),
@@ -166,6 +176,8 @@ function progressText(p) {
     case 'suspect_hash': return { text: `Đang băm bổ sung để tìm nghi trùng ${of('file')}`, pct };
     case 'reject_deleted': return { text: `Đang so sách mới với sách đã xoá trước đây ${of('sách')}`, pct };
     case 'trash': return { text: `Đang đưa sách đã xoá trước đây (tải lại) vào Thùng rác ${of('file')}`, pct };
+    case 'block': return { text: `Đang xoá sách thuộc thể loại bị chặn ${of('file')}`, pct };
+    case 'block_clean': return { text: 'Đang dọn thư mục bị chặn…', pct: null };
     case 'analyze': {
       const part = ['tìm trùng chắc chắn', 'dọn trùng chắc chắn', 'tìm nghi trùng', 'đề xuất thể loại'][p.done || 0] || 'hoàn tất';
       return { text: `Đang phân tích: ${part} (phần ${Math.min((p.done || 0) + 1, p.total || 4)} / ${p.total || 4})`, pct };
@@ -251,7 +263,10 @@ api.listen('scan-done', async (e) => {
 // Lõi gửi `clean-progress` ({ phase: 'trash' | 'refresh', done, total }), `clean-health` mỗi giây (giám sát treo)
 // và đúng một `clean-done`. Hộp này không đóng được bằng Esc / bấm ra ngoài – chỉ "Dừng" hoặc khi xong.
 const CL = { el: null, progress: null, health: null, stopping: false, kind: 'exact' };
-const CL_TITLE = { exact: 'Đang dọn trùng chắc chắn', suspects: 'Đang tự dọn nghi trùng ≥85%' };
+const CL_TITLE = { exact: 'Đang dọn trùng chắc chắn', suspects: 'Đang tự dọn nghi trùng ≥85%', block: 'Đang xoá sách trong thư mục bị chặn' };
+const CL_NOTE = {
+  block: 'Sách vào Thùng rác Windows (khôi phục được). Dừng giữa chừng an toàn: thư mục vẫn bị chặn, phần còn lại được dọn ở lần quét sau.',
+};
 
 function openCleanModal() {
   if (CL.el) return;
@@ -265,7 +280,7 @@ function openCleanModal() {
   const title = CL_TITLE[CL.kind] || CL_TITLE.exact;
   CL.el = h('div', { class: 'modal-back' }, h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
     h('h3', {}, title),
-    h('p', {}, 'Bản giữ lại được kiểm tra còn nguyên trước mỗi lần xoá. Dừng giữa chừng an toàn: file đã xoá nằm trong Thùng rác Windows (khôi phục được), phần còn lại giữ nguyên.'),
+    h('p', {}, CL_NOTE[CL.kind] || 'Bản giữ lại được kiểm tra còn nguyên trước mỗi lần xoá. Dừng giữa chừng an toàn: file đã xoá nằm trong Thùng rác Windows (khôi phục được), phần còn lại giữ nguyên.'),
     CL.txt, h('div', { class: 'progress' }, CL.bar), CL.healthBox,
     h('div', { class: 'actions', style: 'margin-top:14px' }, CL.stop)));
   $('#modal-root').append(CL.el);
@@ -279,6 +294,8 @@ function paintClean() {
   if (S.quitting) text = 'Đang dừng xoá để đóng app…';
   else if (CL.stopping) text = 'Đang dừng sau file hiện tại…';
   else if (p?.phase === 'trash') { text = `Đã đưa ${n(p.done)} / ${n(p.total)} bản thừa vào Thùng rác`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
+  else if (p?.phase === 'block') { text = p.total ? `Đã đưa ${n(p.done)} / ${n(p.total)} sách vào Thùng rác` : 'Đang tìm sách trong thư mục bị chặn…'; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
+  else if (p?.phase === 'block_clean') text = 'Đang đưa thư mục bị chặn vào Thùng rác…';
   else if (p?.phase === 'suspect_hash') { text = `Đang tính độ tin cậy nghi trùng: ${n(p.done)} / ${n(p.total)} file`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
   else if (p?.phase === 'refresh') text = 'Đã xoá xong – đang cập nhật số liệu trùng / nghi trùng…';
   CL.txt.textContent = text;
@@ -319,17 +336,75 @@ api.listen('clean-done', async (e) => {
   const p = e.payload;
   const kind = CL.kind;
   if (kind === 'suspects') S.autoSuspectsDone = true; // đã thử tự dọn trong phiên này – không tự chạy lại liên tục
-  if (!p.ok && stalled) modal({ title: 'Đã dừng dọn trùng vì bị treo', body: p.message, cancel: null, ok: 'Đã hiểu' });
-  else if (!p.ok) fail('Dọn trùng lỗi: ' + p.message);
-  else {
+  const what = kind === 'block' ? 'xoá sách bị chặn' : 'dọn trùng';
+  if (!p.ok && stalled) modal({ title: `Đã dừng ${what} vì bị treo`, body: p.message, cancel: null, ok: 'Đã hiểu' });
+  else if (!p.ok) fail(`Lỗi khi ${what}: ` + p.message);
+  else if (kind === 'block') {
+    const r = p.report;
+    const msg = r.cancelled ? `Đã dừng: ${r.trashed} sách vào Thùng rác. Thư mục vẫn bị chặn – phần còn lại được dọn ở lần quét sau.`
+      : `Đã chặn “${CL.label}”: ${r.trashed} sách vào Thùng rác (${fmtBytes(r.freed_bytes)}).`;
+    toast(msg, { action: { label: 'Mở Thùng rác', run: () => call('open_recycle_bin') }, ms: 9000 });
+    if (r.failures.length || r.aborted) reportTrash({ ...r, trashed: 0 });
+  } else {
     const r = p.report;
     if (r.cancelled) toast(`Đã dừng: ${r.trashed} bản vào Thùng rác (${fmtBytes(r.freed_bytes)}), các bản còn lại giữ nguyên.`, { action: { label: 'Mở Thùng rác', run: () => call('open_recycle_bin') }, ms: 9000 });
     else reportTrash(r);
     if (r.cancelled && (r.failures.length || r.aborted)) reportTrash({ ...r, trashed: 0 });
   }
   await refreshOverview().catch(fail);
-  if (S.view.name === 'dupes' || S.view.name === 'suspects') render();
+  if (S.view.name === 'dupes' || S.view.name === 'suspects' || S.view.name === 'settings' || kind === 'block') render();
 });
+
+// ------------------------------------------------------------------ thể loại bị chặn
+const relLabel = (rel) => rel.split('/').join(' › ');
+
+/** Chặn thư mục `node.rel`: hỏi lại, rồi lõi lưu cấu hình và đưa sách trong đó vào Thùng rác ở nền (hộp tiến trình). */
+async function blockFolder(node) {
+  if (S.ov.config.read_only) return fail('Đang bật chế độ chỉ đọc – tắt trong Cài đặt để chặn thể loại.');
+  const ok = await modal({
+    title: `Chặn “${relLabel(node.rel)}”?`,
+    body: (node.books ? `${node.books.toLocaleString('vi-VN')} cuốn trong thư mục này (kể cả thư mục con) sẽ được đưa vào Thùng rác Windows ngay, rồi cả thư mục. ` : 'Thư mục sẽ được đưa vào Thùng rác Windows. ')
+      + 'Từ nay, sách tự phân loại vào đây cũng vào thẳng Thùng rác và thư mục không được tạo lại. Sách vẫn khôi phục được từ Thùng rác; muốn đọc lại thể loại này thì bỏ chặn trong Cài đặt.',
+    ok: 'Chặn và xoá', danger: true });
+  if (!ok) return;
+  CL.kind = 'block';
+  CL.label = relLabel(node.rel);
+  openCleanModal(); // mở trước: sự kiện tiến trình đầu tiên có thể tới trước khi lệnh trả về
+  try { await call('block_category', { rel: node.rel }); } catch (e) { closeCleanModal(); fail(e); }
+}
+
+async function unblockFolder(rel) {
+  try { await call('unblock_category', { rel }); } catch (e) { return fail(e); }
+  toast(`Đã bỏ chặn “${relLabel(rel)}”. Sách đã xoá vẫn nằm trong Thùng rác Windows.`);
+  await refreshOverview().catch(fail);
+  if (S.view.name === 'settings') render();
+}
+
+/** Hộp chọn thư mục cần chặn: cây thư mục thể loại (3 cấp); `scope` = chỉ một thể loại và thư mục con của nó. */
+async function openBlockPicker(scope) {
+  let nodes;
+  try { nodes = await call('category_tree'); } catch (e) { return fail(e); }
+  if (scope) nodes = nodes.filter((n) => fold(n.rel.split('/')[0]) === fold(scope));
+  const blockedRoots = new Set(S.ov.config.blocked_categories.map(fold));
+  const list = h('div', { class: 'block-tree' });
+  // Đóng hộp bằng chính nút "Đóng" của nó (gỡ cả phím tắt Esc), rồi mới mở hộp xác nhận.
+  const pick = (run) => () => { $('#modal-root').lastElementChild?.querySelector('.actions .btn')?.click(); run(); };
+  for (const n of nodes) {
+    // Mục bị chặn trực tiếp: bỏ chặn được; thư mục con của mục bị chặn: chỉ hiện "Đã chặn".
+    const action = !n.blocked ? h('button', { class: 'btn small danger', onclick: pick(() => blockFolder(n)) }, 'Chặn…')
+      : blockedRoots.has(fold(n.rel)) ? h('button', { class: 'btn small', onclick: pick(() => unblockFolder(n.rel)) }, 'Bỏ chặn')
+        : h('span', { class: 'tag' }, 'Đã chặn');
+    list.append(h('div', { class: 'block-row' + (n.blocked ? ' is-blocked' : ''), style: `padding-left:${(n.depth - 1) * 20 + 4}px` },
+      h('span', { class: 'grow' }, (n.depth > 1 ? '└ ' : '') + n.name),
+      h('span', { class: 'muted small' }, n.exists ? `${n.books.toLocaleString('vi-VN')} cuốn` : 'đã xoá khỏi ổ'),
+      action));
+  }
+  if (!nodes.length) list.append(h('p', { class: 'muted' }, 'Không có thư mục thể loại nào.'));
+  await modal({ title: scope ? `Chặn trong “${scope}”` : 'Chặn thể loại', ok: 'Đóng', cancel: null,
+    content: h('div', {},
+      h('p', { class: 'muted small' }, 'Muốn chặn một phần của thể loại (vd. chỉ Đam mỹ trong “Ngôn tình - Đam mỹ”)? Tự tạo thư mục con (Đam mỹ, Ngôn tình) trong thư mục thể loại và chuyển sách vào – khi phân loại sách mới, app tự nhận ra thư mục con theo tag / tiêu đề.'),
+      list) });
+}
 
 // ------------------------------------------------------------------ điều hướng
 function go(v) {
@@ -1208,7 +1283,7 @@ async function renderActivity() {
   toolbar('Hoạt động', 'nhật ký xoá / di chuyển / hoàn tác', h('button', { class: 'btn', onclick: () => call('open_recycle_bin').catch(fail) }, 'Mở Thùng rác'));
   let batches, reports;
   try { [batches, reports] = await Promise.all([call('list_batches'), call('report_history')]); } catch (e) { return fail(e); }
-  const kinds = { dedupe: 'Dọn trùng', trash: 'Xoá', classify: 'Phân loại', manual: 'Chuyển tay', retitle: 'Sửa tiêu đề' };
+  const kinds = { dedupe: 'Dọn trùng', trash: 'Xoá', classify: 'Phân loại', manual: 'Chuyển tay', retitle: 'Sửa tiêu đề', block: 'Chặn thể loại' };
   const host = h('div', { class: 'pad' });
   if (!batches.length) host.append(h('p', { class: 'muted' }, 'Chưa có thao tác nào.'));
   for (const b of batches) {
@@ -1373,6 +1448,12 @@ function renderSettings() {
     }), 'Mặc định bật. Xem trước bằng lệnh: librarian triage.'),
     field('Sách đã xoá', chk('auto_reject_deleted', 'Tải lại đúng cuốn đã xoá thì tự đưa vào Thùng rác'),
       'Mặc định bật. App nhớ dung lượng + mã băm của sách bạn đã xoá (kể cả sau khi dọn sạch Thùng rác Windows). Bản y hệt tải về lần sau bị loại khi quét; bản gần giống hiện ở “Nghi trùng” để bạn duyệt. Khôi phục từ Thùng rác thì app thôi nhớ cuốn đó.'),
+    field('Thể loại bị chặn', h('div', {},
+      ...(c.blocked_categories.length ? c.blocked_categories.map((rel) => h('div', { class: 'block-row' },
+        h('span', { class: 'grow' }, relLabel(rel)), h('button', { class: 'btn small', onclick: () => unblockFolder(rel) }, 'Bỏ chặn')))
+        : [h('div', { class: 'muted small' }, 'Chưa chặn thể loại nào.')]),
+      h('button', { class: 'btn', style: 'margin-top:6px', onclick: () => openBlockPicker() }, 'Chặn thư mục…')),
+      'Sách trong thư mục bị chặn vào Thùng rác; sách mới tự phân loại vào đó cũng vào thẳng Thùng rác, thư mục không được tạo lại. Chặn được cả thư mục con bạn tự chia (vd. “Ngôn tình - Đam mỹ › Đam mỹ”). Cũng mở được bằng chuột phải lên thể loại ở thanh bên.'),
     field('Giờ quét ngầm', h('input', { type: 'text', value: c.scan_time, onchange: (e) => { c.scan_time = e.target.value; } }), 'HH:MM – đăng ký Task Scheduler sẽ có ở M6.'),
     field('Ngưỡng tin cậy cao', num('classify_high', 1, 100), 'Đề xuất từ mức này trở lên được tick sẵn.'),
     field('Ngưỡng trung bình', num('classify_medium', 1, 100), 'Dưới mức này: đưa vào “Cần làm tay”.'),
