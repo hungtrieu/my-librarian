@@ -111,6 +111,23 @@ fn two_drives_form_one_library() {
 }
 
 #[test]
+fn a_full_drive_never_triggers_automatic_cross_drive_moves() {
+    let mut e = setup();
+    // Mọi ổ đều "sắp đầy" (giữ trống 1 PB): vẫn phân loại tại chỗ, không chép sang ổ kia.
+    e.lib.config.min_free_gb = 1_000_000;
+    calibre(&e.d.join("Chưa phân loại"), "Án mạng D", "Trinh thám");
+    analyze(&e);
+    let p = path_of(&e, "Án mạng D.epub");
+    assert!(p.starts_with(&e.d), "{}", p.display());
+    let a = e.lib.conn.query_row("SELECT id FROM books WHERE file_name = 'A.epub'", [], |r| r.get(0)).unwrap();
+    let req = moves::MoveRequest { book_id: a, target_dir: e.g.join("Trinh thám") };
+    moves::apply_moves(&e.lib.conn, &e.lib.config, &[req], "manual").unwrap();
+    assert_eq!(path_of(&e, "A.epub").parent().unwrap(), e.d.join("Trinh thám"));
+    let vols = volumes::list(&e.lib.conn, &e.lib.config).unwrap();
+    assert!(vols.iter().all(|v| v.low), "ổ sắp đầy chỉ được cảnh báo");
+}
+
+#[test]
 fn balance_moves_whole_folders_to_the_other_drive_and_can_be_undone() {
     let e = setup();
     epub(&e.d.join("Văn học").join("Bộ X").join("X1.epub"), "X1", &[]);

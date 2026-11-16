@@ -345,6 +345,8 @@ pub fn scan(conn: &Connection, cfg: &Config, opts: &ScanOptions) -> Result<ScanS
         return Err(crate::Error::NoLibrary);
     }
     // Thư mục thư viện đổi trong cấu hình (thêm / bỏ ổ): cập nhật loại thư mục gốc trong DB trước khi quét.
+    // File tạm của lần chép sang ổ khác bị ngắt (mất điện, app bị tắt): dọn trước khi quét.
+    crate::moves::recover_interrupted_copy();
     db::sync_library_roots(conn, cfg)?;
     let kind = opts.kind.unwrap_or("app");
     conn.execute(

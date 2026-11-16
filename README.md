@@ -62,8 +62,9 @@ Chạy lần lượt: format → clippy (`-D warnings`) → test → build relea
 
 Sách nhiều quá một ổ: Cài đặt → **+ Thêm thư mục ở ổ khác…** (vd. thư mục chính `D:\books` + `G:\sach`). Mỗi thư mục có cùng cấu trúc (thể loại ở cấp 1, hộp thư đến riêng); app quét cả hai, và thể loại cùng tên trên các ổ (kể cả khác dấu, vd. `Văn học` / `Van hoc`) hiện làm một.
 
-- **Xếp sách tiết kiệm ổ:** sách luôn ở lại ổ đang chứa nó – phân loại, chuyển tay, ánh xạ tag trong cùng ổ chỉ là đổi tên, tức thì, không chép, không tốn thêm chỗ (thư mục thể loại / thư mục con được tạo ở ổ đó nếu chưa có). Chỉ khi ổ còn trống dưới mức **Giữ trống mỗi ổ** (mặc định 20 GB) thì sách mới sang ổ thư viện còn nhiều chỗ nhất, vào đúng thư mục tương ứng ở ổ đó.
-- **Ổ lưu sách** (thanh bên): dung lượng từng ổ, ổ sắp đầy được đánh dấu; **Chuyển bớt sách sang ổ khác** đề xuất chuyển nguyên thư mục (bộ / tác giả), thư mục lớn trước, sang ổ còn chỗ – chạy nền, dừng được, hoàn tác được (lô `Cân bằng ổ` trong Hoạt động). Mỗi file chép sang ổ mới, kiểm tra đủ dung lượng rồi mới xoá bản cũ.
+- **Không bao giờ tự chép sách qua ổ khác.** Phân loại, chuyển tay, ánh xạ tag đều dùng thư mục tương ứng trên chính ổ đang chứa sách (tạo nếu chưa có) – chỉ là đổi tên: tức thì, không chép dữ liệu, không tốn thêm chỗ, không thể làm hỏng file. Ổ còn trống dưới mức **Giữ trống mỗi ổ** (mặc định 20 GB) chỉ được cảnh báo; hãy tải sách mới vào hộp thư đến ở ổ còn chỗ.
+- **Ổ lưu sách** (thanh bên): dung lượng từng ổ, ổ sắp đầy được đánh dấu. Chép qua ổ chỉ xảy ra khi bạn bấm **Chuyển bớt sách sang ổ khác**: chuyển nguyên thư mục (bộ / tác giả), thư mục lớn trước, sang ổ còn chỗ – chạy nền, dừng được, hoàn tác được (cũng chạy nền).
+- **Chép an toàn:** mỗi file chép vào file tạm ẩn cạnh đích, đọc lại so SHA-256 với bản gốc, đổi tên thành tên thật rồi mới xoá bản gốc. Mất điện / app bị tắt giữa chừng: bản gốc còn nguyên, file tạm được dọn ở lần sau (ghi chú `copy-inflight.txt` trong thư mục dữ liệu app).
 - Bản trùng giữa hai ổ hiện ở **Trùng chắc chắn** – dọn đi là lấy lại chỗ. Ổ rời chưa cắm thì bị bỏ qua khi quét, sách trên đó không bị coi là mất.
 - Lõi: `crates/core/src/volumes.rs`; cấu hình `extra_libraries`, `min_free_gb` trong `config.json`.
 

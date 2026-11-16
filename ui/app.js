@@ -267,9 +267,10 @@ api.listen('scan-done', async (e) => {
 // Lõi gửi `clean-progress` ({ phase: 'trash' | 'refresh', done, total }), `clean-health` mỗi giây (giám sát treo)
 // và đúng một `clean-done`. Hộp này không đóng được bằng Esc / bấm ra ngoài – chỉ "Dừng" hoặc khi xong.
 const CL = { el: null, progress: null, health: null, stopping: false, kind: 'exact' };
-const CL_TITLE = { exact: 'Đang dọn trùng chắc chắn', suspects: 'Đang tự dọn nghi trùng ≥85%', block: 'Đang xoá sách trong thư mục bị chặn', balance: 'Đang chuyển sách sang ổ khác' };
+const CL_TITLE = { exact: 'Đang dọn trùng chắc chắn', suspects: 'Đang tự dọn nghi trùng ≥85%', block: 'Đang xoá sách trong thư mục bị chặn', balance: 'Đang chuyển sách sang ổ khác', undo: 'Đang trả sách về ổ cũ' };
 const CL_NOTE = {
-  balance: 'Mỗi file được chép sang ổ mới, kiểm tra đủ dung lượng rồi mới xoá bản cũ. Dừng giữa chừng an toàn: sách đã chuyển giữ nguyên ở ổ mới (hoàn tác được ở Hoạt động), phần còn lại ở ổ cũ.',
+  balance: 'Mỗi file được chép vào file tạm ở ổ mới, so SHA-256 với bản gốc, đổi tên rồi mới xoá bản cũ – mất điện giữa chừng cũng không hỏng sách. Dừng giữa chừng an toàn: sách đã chuyển giữ nguyên ở ổ mới (hoàn tác được ở Hoạt động), phần còn lại ở ổ cũ.',
+  undo: 'Chép an toàn từng file về chỗ cũ (file tạm → so SHA-256 → đổi tên → mới xoá). Dừng giữa chừng an toàn: bấm Hoàn tác lần nữa để làm tiếp phần còn lại.',
   block: 'Sách vào Thùng rác Windows (khôi phục được). Dừng giữa chừng an toàn: thư mục vẫn bị chặn, phần còn lại được dọn ở lần quét sau.',
 };
 
@@ -301,8 +302,8 @@ function paintClean() {
   else if (p?.phase === 'trash') { text = `Đã đưa ${n(p.done)} / ${n(p.total)} bản thừa vào Thùng rác`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
   else if (p?.phase === 'block') { text = p.total ? `Đã đưa ${n(p.done)} / ${n(p.total)} sách vào Thùng rác` : 'Đang tìm sách trong thư mục bị chặn…'; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
   else if (p?.phase === 'block_clean') text = 'Đang đưa thư mục bị chặn vào Thùng rác…';
-  else if (p?.phase === 'move') { text = `Đã chuyển ${n(p.done)} / ${n(p.total)} sách sang ổ khác`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
-  else if (p?.phase === 'refresh' && CL.kind === 'balance') text = 'Đã chuyển xong – đang cập nhật số liệu…';
+  else if (p?.phase === 'move') { text = `Đã chuyển ${n(p.done)} / ${n(p.total)} sách ${CL.kind === 'undo' ? 'về chỗ cũ' : 'sang ổ khác'}`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
+  else if (p?.phase === 'refresh' && (CL.kind === 'balance' || CL.kind === 'undo')) text = 'Đã chuyển xong – đang cập nhật số liệu…';
   else if (p?.phase === 'suspect_hash') { text = `Đang tính độ tin cậy nghi trùng: ${n(p.done)} / ${n(p.total)} file`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
   else if (p?.phase === 'refresh') text = 'Đã xoá xong – đang cập nhật số liệu trùng / nghi trùng…';
   CL.txt.textContent = text;
@@ -343,10 +344,14 @@ api.listen('clean-done', async (e) => {
   const p = e.payload;
   const kind = CL.kind;
   if (kind === 'suspects') S.autoSuspectsDone = true; // đã thử tự dọn trong phiên này – không tự chạy lại liên tục
-  const what = kind === 'block' ? 'xoá sách bị chặn' : kind === 'balance' ? 'chuyển sách sang ổ khác' : 'dọn trùng';
+  const what = kind === 'block' ? 'xoá sách bị chặn' : kind === 'balance' ? 'chuyển sách sang ổ khác' : kind === 'undo' ? 'hoàn tác' : 'dọn trùng';
   if (!p.ok && stalled) modal({ title: `Đã dừng ${what} vì bị treo`, body: p.message, cancel: null, ok: 'Đã hiểu' });
   else if (!p.ok) fail(`Lỗi khi ${what}: ` + p.message);
-  else if (kind === 'balance') {
+  else if (kind === 'undo') {
+    const r = p.report;
+    toast(r.cancelled ? `Đã dừng: ${r.restored} file đã về chỗ cũ. Bấm Hoàn tác ở Hoạt động để làm tiếp.` : `Đã trả ${r.restored} file về chỗ cũ.`, { error: !!r.failures.length, ms: 9000 });
+    if (r.failures.length) fail(`${r.failures.length} file không hoàn tác được: ${r.failures[0].message}`);
+  } else if (kind === 'balance') {
     const r = p.report;
     if (r.moved.length) toast((r.cancelled ? 'Đã dừng: ' : '') + `Đã chuyển ${r.moved.length.toLocaleString('vi-VN')} sách sang ổ khác.`, { action: { label: 'Hoàn tác', run: () => undo(r.batch_id) }, ms: 9000 });
     else if (!r.failures.length) toast('Không có sách nào cần chuyển.');
@@ -364,7 +369,7 @@ api.listen('clean-done', async (e) => {
     if (r.cancelled && (r.failures.length || r.aborted)) reportTrash({ ...r, trashed: 0 });
   }
   await refreshOverview().catch(fail);
-  if (S.view.name === 'dupes' || S.view.name === 'suspects' || S.view.name === 'settings' || S.view.name === 'volumes' || kind === 'block') render();
+  if (['dupes', 'suspects', 'settings', 'volumes', 'activity'].includes(S.view.name) || kind === 'block') render();
 });
 
 // ------------------------------------------------------------------ thể loại bị chặn
@@ -987,7 +992,9 @@ function reportMoves(r) {
 
 async function undo(id) {
   try {
+    CL.kind = 'undo'; // lô chép qua ổ khác: hoàn tác chạy nền, sự kiện tiến trình có thể tới trước khi lệnh trả về
     const u = await call('undo_batch', { id });
+    if (u.background) { openCleanModal(); return; }
     toast(`Đã trả ${u.restored} file về chỗ cũ` + (u.failures.length ? `, ${u.failures.length} file không hoàn tác được` : '.'), { error: !!u.failures.length });
   } catch (e) { fail(e); }
   await refreshOverview();
@@ -1435,7 +1442,8 @@ async function renderVolumes() {
   }
   host.append(h('div', { class: 'muted small', style: 'margin:14px 0' },
     'Cách app xếp sách để tiết kiệm ổ: sách luôn ở lại ổ đang chứa nó – chuyển trong cùng ổ chỉ là đổi tên, tức thì, không tốn thêm chỗ. ',
-    `Chỉ khi ổ còn dưới ${minGb} GB (đổi trong Cài đặt) thì sách mới phân loại / chuyển tay mới sang ổ còn nhiều chỗ, vào đúng thư mục thể loại tương ứng ở ổ đó. `,
+    'App không bao giờ tự chép sách qua ổ khác (chép hàng loạt giữa hai ổ chậm, dễ treo). Chỉ khi bạn bấm “Chuyển bớt” bên dưới, và mỗi file được chép an toàn: file tạm → so SHA-256 → đổi tên → mới xoá bản cũ. ',
+    `Ổ còn dưới ${minGb} GB thì được đánh dấu: hãy tải sách mới vào hộp thư đến ở ổ còn chỗ, hoặc chuyển bớt. `,
     'Bản trùng giữa hai ổ hiện ở “Trùng chắc chắn” – dọn đi là lấy lại chỗ.'));
   const online = vols.filter((v) => v.online);
   if (online.length >= 2) {
@@ -1480,7 +1488,7 @@ async function renderActivity() {
   for (const b of batches) {
     const ops = h('div');
     let open = false;
-    const canUndo = (b.kind === 'classify' || b.kind === 'manual') && !b.undone_at && b.done;
+    const canUndo = ['classify', 'manual', 'tagmap', 'balance'].includes(b.kind) && !b.undone_at && b.done;
     host.append(h('div', { class: 'group' },
       h('div', { class: 'group-head' },
         h('button', { class: 'btn small', 'aria-expanded': 'false', onclick: async (e) => {
@@ -1631,7 +1639,7 @@ function renderSettings() {
       h('button', { class: 'btn', style: 'margin-top:6px', onclick: addLibraryFolder }, '+ Thêm thư mục ở ổ khác…')),
       'Sách nhiều quá một ổ: thêm thư mục ở ổ khác (vd. G:\\sach). Thể loại cùng tên trên các ổ được gộp làm một. Xem dung lượng và cân bằng ở “Ổ lưu sách”.'),
     field('Giữ trống mỗi ổ', h('input', { type: 'number', min: 0, max: 100000, value: c.min_free_gb, onchange: (e) => { c.min_free_gb = Math.max(0, +e.target.value || 0); } }),
-      'GB. Ổ còn trống dưới mức này thì sách mới / sách được phân loại tự sang ổ thư viện còn chỗ.'),
+      'GB. Ổ còn trống dưới mức này được cảnh báo ở “Ổ lưu sách” (app không tự chép sách qua ổ khác – bạn chọn chuyển bớt).'),
     field('Thư mục hộp thư đến', h('input', { type: 'text', value: c.inbox_name, onchange: (e) => { c.inbox_name = e.target.value.trim() || 'Chưa phân loại'; } }), 'Tên thư mục con trong thư viện chứa sách mới. Thư mục này không bao giờ là đích phân loại.'),
     field('Bỏ qua thư mục', h('input', { type: 'text', value: c.exclude_names.join('; '), onchange: (e) => { c.exclude_names = e.target.value.split(';').map((s) => s.trim()).filter(Boolean); } }), 'Phân cách bằng dấu ;'),
     field('Chế độ chỉ đọc', chk('read_only', 'Không xoá, không di chuyển file nào'), 'Bật khi thử trên kho thật để đối chiếu kết quả trước.'),

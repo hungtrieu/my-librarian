@@ -889,9 +889,28 @@ async fn apply_moves(state: State<'_, AppState>, moves: Vec<MoveIn>, kind: Optio
     .await
 }
 
+#[derive(Serialize)]
+struct UndoOut {
+    #[serde(flatten)]
+    report: UndoReport,
+    /// Lô có chép qua ổ khác: đang hoàn tác ở nền (hộp tiến trình, sự kiện `clean-*`), `report` trống.
+    background: bool,
+}
+
+/// Hoàn tác một lô. Lô chỉ đổi tên trong cùng ổ: làm ngay. Lô có chép qua ổ khác (cân bằng ổ): chạy nền như cân bằng
+/// – không giữ giao diện chờ hàng giờ, dừng được, làm tiếp được.
 #[tauri::command]
-async fn undo_batch(state: State<'_, AppState>, id: i64) -> CmdResult<UndoReport> {
-    with_lib(&state.lib, move |lib| refreshed(lib, |lib| moves::undo_batch(&lib.conn, &lib.config, id))).await
+async fn undo_batch(app: AppHandle, state: State<'_, AppState>, id: i64) -> CmdResult<UndoOut> {
+    let cross = with_lib(&state.lib, move |lib| moves::batch_crosses_drives(&lib.conn, id)).await?;
+    if cross {
+        spawn_clean(app, state, move |lib, cancel, on| {
+            moves::undo_batch_with(&lib.conn, &lib.config, id, Some(cancel), Some(on))
+        })?;
+        return Ok(UndoOut { report: UndoReport { batch_id: id, ..Default::default() }, background: true });
+    }
+    let report =
+        with_lib(&state.lib, move |lib| refreshed(lib, |lib| moves::undo_batch(&lib.conn, &lib.config, id))).await?;
+    Ok(UndoOut { report, background: false })
 }
 
 #[tauri::command]

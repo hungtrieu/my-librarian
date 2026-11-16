@@ -2,13 +2,15 @@
 //!
 //! - Mỗi thư mục thư viện có cùng cấu trúc: thể loại ở cấp 1, hộp thư đến riêng. Thể loại cùng tên trên các ổ là
 //!   một thể loại trong app (`classify::list_categories` gộp lại).
-//! - Xếp sách tiết kiệm ([`Placer`]): sách luôn ở lại ổ nó đang nằm – chuyển trong cùng ổ chỉ là đổi tên, tức thì,
-//!   không tốn thêm chỗ, không chép dữ liệu. Chỉ khi ổ đó còn trống dưới mức tối thiểu (`min_free_gb`) thì sách
-//!   được chuyển sang ổ thư viện còn nhiều chỗ nhất (vào đúng thư mục thể loại / thư mục con tương ứng ở ổ đó).
-//!   Sách từ thư mục nguồn phụ (không phải thư viện) vào ổ đã có thư mục đích, còn chỗ; không thì ổ trống nhất.
+//! - Xếp sách ([`Placer`]): sách **không bao giờ tự chuyển qua ổ khác** – phân loại, ánh xạ tag, chuyển tay đều
+//!   dùng thư mục tương ứng trên chính ổ đang chứa sách (tạo nếu chưa có). Chuyển trong cùng ổ chỉ là đổi tên: tức
+//!   thì, không chép dữ liệu, không thể làm hỏng file, không tốn thêm chỗ. Ổ sắp đầy (dưới `min_free_gb`) chỉ được
+//!   cảnh báo; chuyển sang ổ khác chỉ xảy ra khi người dùng chủ động cân bằng. Sách từ thư mục nguồn phụ ở ổ không có
+//!   thư mục thư viện nào thì buộc phải chép: vào ổ đã có thư mục đích và còn chỗ, không thì ổ trống nhất.
 //! - Cân bằng ([`balance_plan`]): ổ dưới mức tối thiểu → đề xuất chuyển nguyên thư mục (bộ / tác giả / thể loại
-//!   con), thư mục lớn trước, sang ổ còn chỗ, giữ nguyên đường dẫn tương đối. Áp dụng bằng `moves::apply_moves_with`
-//!   (chép → kiểm tra dung lượng → xoá nguồn; hoàn tác được).
+//!   con), thư mục lớn trước, sang ổ còn chỗ, giữ nguyên đường dẫn tương đối. Chép an toàn từng file (file tạm →
+//!   so SHA-256 hai bản → đổi tên → mới xoá bản gốc, xem `moves::move_file`); chạy nền, dừng / làm tiếp được,
+//!   hoàn tác được.
 
 use crate::config::{same_path, Config};
 use crate::error::{Error, Result};
@@ -22,6 +24,28 @@ const GB: u64 = 1024 * 1024 * 1024;
 /// (tổng dung lượng, còn trống) của ổ chứa `path`.
 pub fn space(path: &Path) -> Option<(u64, u64)> {
     Some((fs4::total_space(path).ok()?, fs4::available_space(path).ok()?))
+}
+
+/// Mã ổ / phân vùng chứa `path` (đường dẫn chưa có thì xét thư mục cha gần nhất đã có). Hai đường dẫn cùng mã thì
+/// chuyển giữa chúng chỉ là đổi tên, không phải chép dữ liệu.
+pub fn volume_id(path: &Path) -> Option<String> {
+    #[cfg(windows)]
+    {
+        match path.components().next() {
+            Some(std::path::Component::Prefix(p)) => Some(p.as_os_str().to_string_lossy().to_uppercase()),
+            _ => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::MetadataExt;
+        path.ancestors().find_map(|a| std::fs::metadata(a).ok()).map(|m| m.dev().to_string())
+    }
+}
+
+/// Hai đường dẫn nằm trên cùng một ổ.
+pub fn same_volume(a: &Path, b: &Path) -> bool {
+    matches!((volume_id(a), volume_id(b)), (Some(x), Some(y)) if x == y)
 }
 
 /// Kiểm tra `root` dùng được làm thư mục thư viện thêm: có thật, chưa có, không lồng trong / chứa thư mục thư viện
@@ -66,7 +90,7 @@ pub struct Volume {
 
 /// Các thư mục thư viện kèm dung lượng ổ và số sách.
 pub fn list(conn: &Connection, cfg: &Config) -> Result<Vec<Volume>> {
-    let reserve = cfg.min_free_gb * GB;
+    let reserve = cfg.min_free_gb.saturating_mul(GB);
     let mut out = Vec::new();
     for (i, root) in cfg.library_roots().into_iter().enumerate() {
         let path = root.to_string_lossy().into_owned();
@@ -117,6 +141,8 @@ pub fn dir_on(root: &Path, rel: &str) -> PathBuf {
 /// để một lô lớn không dồn hết vào một ổ.
 pub struct Placer {
     roots: Vec<PathBuf>,
+    /// Ổ của từng thư mục thư viện (đọc khi cần).
+    vols: Vec<Option<Option<String>>>,
     /// Còn trống (byte); `None` = không biết (ổ chưa cắm / không đọc được) – không bao giờ chọn sang ổ đó.
     free: Vec<Option<u64>>,
     reserve: u64,
@@ -126,12 +152,14 @@ impl Placer {
     pub fn new(cfg: &Config) -> Self {
         let roots = cfg.library_roots();
         let free = roots.iter().map(|r| r.is_dir().then(|| space(r).map(|s| s.1)).flatten()).collect();
-        Placer { roots, free, reserve: cfg.min_free_gb * GB }
+        let vols = vec![None; roots.len()];
+        Placer { roots, vols, free, reserve: cfg.min_free_gb.saturating_mul(GB) }
     }
 
     /// Dùng trong test: dung lượng trống cho sẵn.
     pub fn with_free(roots: Vec<PathBuf>, free: Vec<Option<u64>>, reserve: u64) -> Self {
-        Placer { roots, free, reserve }
+        let vols = vec![None; roots.len()];
+        Placer { roots, vols, free, reserve }
     }
 
     pub fn roots(&self) -> &[PathBuf] {
@@ -145,42 +173,50 @@ impl Placer {
             .max_by_key(|&i| self.roots[i].components().count())
     }
 
-    fn low(&self, i: usize) -> bool {
-        self.free[i].is_some_and(|f| f < self.reserve)
-    }
-
-    /// Ổ khác còn đủ chỗ cho `size` mà vẫn trên mức tối thiểu; ưu tiên ổ đã có `rel`, rồi ổ trống nhiều nhất.
-    fn roomy(&self, except: Option<usize>, size: u64, rel: &str) -> Option<usize> {
-        let ok: Vec<usize> = (0..self.roots.len())
-            .filter(|&i| Some(i) != except && self.free[i].is_some_and(|f| f >= self.reserve.saturating_add(size)))
-            .collect();
-        let has = |i: &usize| !rel.is_empty() && crate::blocked::find_dir(&self.roots[*i], rel).is_some();
-        ok.iter()
-            .copied()
-            .filter(has)
-            .max_by_key(|&i| self.free[i])
-            .or_else(|| ok.iter().copied().max_by_key(|&i| self.free[i]))
+    /// Ổ (phân vùng) của thư mục thư viện `i`.
+    fn vol(&mut self, i: usize) -> Option<String> {
+        if self.vols[i].is_none() {
+            self.vols[i] = Some(volume_id(&self.roots[i]));
+        }
+        self.vols[i].clone().flatten()
     }
 
     /// Thư mục thật cho file `src` (`size` byte) sắp chuyển vào thư mục (logic) `rel` của thư viện.
+    ///
+    /// **Không bao giờ chọn ổ khác với ổ đang chứa file** khi có thư mục thư viện trên cùng ổ: chuyển trong cùng ổ chỉ
+    /// là đổi tên – tức thì, không chép dữ liệu, không thể làm hỏng file. Ổ sắp đầy cũng vậy (chỉ cảnh báo ở màn "Ổ
+    /// lưu sách"; chuyển bớt sang ổ khác là việc người dùng tự chọn). Chỉ file nằm ở ổ không có thư mục thư viện nào
+    /// (thư mục nguồn phụ) mới phải chép: vào ổ đã có thư mục đích và còn chỗ, không thì ổ trống nhất.
     pub fn place_rel(&mut self, src: &Path, size: u64, rel: &str) -> PathBuf {
-        let home = self.root_index(src);
-        let pick = match home {
-            Some(h) if !self.low(h) => h,
-            Some(h) => self.roomy(Some(h), size, rel).unwrap_or(h),
-            None => self
-                .roomy(None, size, rel)
-                .or_else(|| (0..self.roots.len()).find(|&i| self.free[i].is_some() || self.roots[i].is_dir()))
-                .unwrap_or(0),
+        let pick = match self.root_index(src) {
+            Some(h) => h,
+            None => {
+                let sv = volume_id(src);
+                let same: Vec<usize> = (0..self.roots.len()).filter(|&i| sv.is_some() && self.vol(i) == sv).collect();
+                let has = |i: &usize| !rel.is_empty() && crate::blocked::find_dir(&self.roots[*i], rel).is_some();
+                if let Some(i) = same.iter().copied().find(has).or_else(|| same.first().copied()) {
+                    i
+                } else {
+                    let ok: Vec<usize> = (0..self.roots.len())
+                        .filter(|&i| self.free[i].is_some_and(|f| f >= self.reserve.saturating_add(size)))
+                        .collect();
+                    let i = ok
+                        .iter()
+                        .copied()
+                        .filter(has)
+                        .max_by_key(|&i| self.free[i])
+                        .or_else(|| ok.iter().copied().max_by_key(|&i| self.free[i]))
+                        .or_else(|| {
+                            (0..self.roots.len()).filter(|&i| self.free[i].is_some()).max_by_key(|&i| self.free[i])
+                        })
+                        .unwrap_or(0);
+                    if let Some(f) = self.free[i].as_mut() {
+                        *f = f.saturating_sub(size);
+                    }
+                    i
+                }
+            }
         };
-        if home != Some(pick) {
-            if let Some(f) = self.free[pick].as_mut() {
-                *f = f.saturating_sub(size);
-            }
-            if let Some(f) = home.and_then(|h| self.free[h].as_mut()) {
-                *f += size;
-            }
-        }
         dir_on(&self.roots[pick], rel)
     }
 
@@ -224,7 +260,7 @@ pub fn balance_plan(conn: &Connection, cfg: &Config, from: Option<&Path>, want: 
     if roots.len() < 2 {
         return Ok(BalancePlan::default());
     }
-    let reserve = cfg.min_free_gb * GB;
+    let reserve = cfg.min_free_gb.saturating_mul(GB);
     let mut free: Vec<Option<u64>> =
         roots.iter().map(|r| r.is_dir().then(|| space(r).map(|s| s.1)).flatten()).collect();
     let blocked = crate::blocked::Blocked::new(cfg);
@@ -339,50 +375,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn placer_stays_on_same_drive_unless_low() {
+    fn placer_never_leaves_the_drive_of_a_library_book() {
         let t = tempfile::tempdir().unwrap();
         let (d, g) = (t.path().join("d"), t.path().join("g"));
         std::fs::create_dir_all(d.join("Văn học")).unwrap();
         std::fs::create_dir_all(g.join("Văn học").join("Nguyễn Nhật Ánh")).unwrap();
-        // D còn nhiều chỗ: sách trên D ở lại D, kể cả khi thư mục con chỉ có trên G (sẽ tạo trên D).
-        let mut p = Placer::with_free(vec![d.clone(), g.clone()], vec![Some(100 * GB), Some(50 * GB)], 20 * GB);
-        assert_eq!(p.place(&d.join("Chưa phân loại/x.epub"), GB, &g.join("Văn học")), d.join("Văn học"));
-        assert_eq!(
-            p.place_rel(&d.join("Chưa phân loại/x.epub"), GB, "van hoc/Nguyễn Nhật Ánh"),
-            d.join("Văn học").join("Nguyễn Nhật Ánh")
-        );
-        // D dưới mức tối thiểu: sang G, dùng đúng thư mục có sẵn ở G.
-        let mut p = Placer::with_free(vec![d.clone(), g.clone()], vec![Some(5 * GB), Some(50 * GB)], 20 * GB);
-        assert_eq!(
-            p.place_rel(&d.join("Chưa phân loại/x.epub"), GB, "Văn học/nguyen nhat anh"),
-            g.join("Văn học").join("Nguyễn Nhật Ánh")
-        );
-        // G cũng sắp đầy (không đủ chỗ trên mức tối thiểu): ở lại D.
-        let mut p = Placer::with_free(vec![d.clone(), g.clone()], vec![Some(5 * GB), Some(20 * GB)], 20 * GB);
-        assert_eq!(p.place_rel(&d.join("x.epub"), GB, "Văn học"), d.join("Văn học"));
-        // Sách ngoài thư viện: vào ổ đã có thư mục và còn chỗ.
-        let mut p = Placer::with_free(vec![d.clone(), g.clone()], vec![Some(100 * GB), Some(50 * GB)], 20 * GB);
-        assert_eq!(
-            p.place_rel(Path::new("/nguon/x.epub"), GB, "Văn học/Nguyễn Nhật Ánh"),
-            g.join("Văn học/Nguyễn Nhật Ánh")
-        );
-        // Ổ chưa cắm (không biết dung lượng) không bao giờ được chọn.
-        let mut p = Placer::with_free(vec![d.clone(), g.clone()], vec![Some(5 * GB), None], 20 * GB);
-        assert_eq!(p.place_rel(&d.join("x.epub"), GB, "Văn học"), d.join("Văn học"));
+        for free in [Some(100 * GB), Some(GB)] {
+            // Kể cả khi D sắp đầy (dưới mức 20 GB) và G còn rất nhiều chỗ: sách trên D vẫn ở lại D.
+            let mut p = Placer::with_free(vec![d.clone(), g.clone()], vec![free, Some(900 * GB)], 20 * GB);
+            assert_eq!(p.place(&d.join("Chưa phân loại/x.epub"), GB, &g.join("Văn học")), d.join("Văn học"));
+            assert_eq!(
+                p.place_rel(&d.join("Chưa phân loại/x.epub"), GB, "van hoc/Nguyễn Nhật Ánh"),
+                d.join("Văn học").join("Nguyễn Nhật Ánh"),
+                "thư mục con chỉ có ở G được tạo ở D"
+            );
+            assert_eq!(p.place_rel(&g.join("Chưa phân loại/y.epub"), GB, "Văn học"), g.join("Văn học"));
+        }
     }
 
     #[test]
-    fn placer_tracks_free_space_within_a_batch() {
+    fn placer_prefers_a_library_on_the_same_drive_for_outside_books() {
         let t = tempfile::tempdir().unwrap();
-        let (d, g, h) = (t.path().join("d"), t.path().join("g"), t.path().join("h"));
-        let mut p = Placer::with_free(
-            vec![d.clone(), g.clone(), h.clone()],
-            vec![Some(GB), Some(23 * GB), Some(22 * GB)],
-            20 * GB,
+        let (d, g) = (t.path().join("d"), t.path().join("g"));
+        std::fs::create_dir_all(g.join("Văn học").join("Nguyễn Nhật Ánh")).unwrap();
+        std::fs::create_dir_all(&d).unwrap();
+        // Thư mục nguồn phụ cùng ổ (test: cùng một đĩa) → không chép, dùng thư viện đã có thư mục đích.
+        let mut p = Placer::with_free(vec![d.clone(), g.clone()], vec![Some(100 * GB), Some(50 * GB)], 20 * GB);
+        assert_eq!(
+            p.place_rel(&t.path().join("nguon/x.epub"), GB, "Văn học/Nguyễn Nhật Ánh"),
+            g.join("Văn học/Nguyễn Nhật Ánh")
         );
-        // Ổ trống nhất trước, rồi khi G đã nhận 2 GB thì sang H.
-        assert!(p.place_rel(&d.join("a"), 2 * GB, "X").starts_with(&g));
-        assert!(p.place_rel(&d.join("b"), 2 * GB, "X").starts_with(&h));
-        assert!(p.place_rel(&d.join("c"), 2 * GB, "X").starts_with(&d), "hết ổ còn chỗ → ở lại");
+        assert!(same_volume(&d, &t.path().join("nguon/chua-co")));
     }
 }

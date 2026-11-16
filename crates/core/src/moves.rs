@@ -59,47 +59,124 @@ pub fn move_file(src: &Path, dst: &Path) -> io::Result<()> {
     }
     match std::fs::rename(src, dst) {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::CrossesDevices => copy_then_delete(src, dst),
+        Err(e) if e.kind() == io::ErrorKind::CrossesDevices => copy_verify_replace(src, dst),
         Err(e) => Err(e),
     }
 }
 
-/// Chép từng khúc 4 MB, mỗi khúc một nhịp cho bộ giám sát treo (chép file vài GB sang ổ USB có thể mất vài phút).
-fn copy_pulsing(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u64> {
+/// Chép từng khúc 4 MB, vừa chép vừa băm SHA-256; mỗi khúc một nhịp cho bộ giám sát treo (chép file vài GB sang ổ
+/// USB có thể mất vài phút).
+fn copy_pulsing(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<(u64, [u8; 32])> {
+    use sha2::Digest;
     let mut buf = vec![0u8; 4 << 20];
     let mut n = 0u64;
+    let mut h = sha2::Sha256::new();
     loop {
         let k = match from.read(&mut buf) {
-            Ok(0) => return Ok(n),
+            Ok(0) => return Ok((n, h.finalize().into())),
             Ok(k) => k,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         };
         to.write_all(&buf[..k])?;
+        h.update(&buf[..k]);
         n += k as u64;
         crate::progress::pulse();
     }
 }
 
-fn copy_then_delete(src: &Path, dst: &Path) -> io::Result<()> {
-    let meta = std::fs::metadata(src)?;
-    {
-        let mut from = std::fs::File::open(src)?;
-        let mut to = std::fs::File::create_new(dst)?;
-        let r = copy_pulsing(&mut from, &mut to).and_then(|_| to.sync_all());
-        if let Err(e) = r {
-            drop(to);
-            let _ = std::fs::remove_file(dst);
-            return Err(e);
+/// Tên file tạm (ẩn – quét bỏ qua) khi chép `dst` sang ổ khác.
+pub fn temp_copy_path(dst: &Path) -> PathBuf {
+    let name = dst.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    dst.with_file_name(format!(".mylib-dang-chep-{name}"))
+}
+
+/// Ghi chú "đang chép dở" (đường dẫn file tạm) trong thư mục dữ liệu app: mất điện / app bị tắt giữa lúc chép thì
+/// lần sau [`recover_interrupted_copy`] dọn file tạm còn sót. Mỗi lúc chỉ chép một file.
+fn inflight_marker() -> PathBuf {
+    crate::config::default_home().join("copy-inflight.txt")
+}
+
+/// Dọn file tạm của lần chép sang ổ khác bị ngắt giữa chừng (bản gốc chưa bị xoá nên không mất gì). Gọi trước mỗi
+/// lần chép và khi bắt đầu quét.
+pub fn recover_interrupted_copy() {
+    let m = inflight_marker();
+    let Ok(tmp) = std::fs::read_to_string(&m) else { return };
+    let tmp = PathBuf::from(tmp.trim());
+    if tmp.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".mylib-dang-chep-")) && tmp.is_file() {
+        match std::fs::remove_file(&tmp) {
+            Ok(()) => tracing::warn!("dọn file chép dở từ lần trước: {}", tmp.display()),
+            Err(e) => {
+                tracing::warn!("không dọn được file chép dở {}: {e}", tmp.display());
+                return;
+            }
         }
+    }
+    let _ = std::fs::remove_file(m);
+}
+
+/// Chép sang ổ khác một cách an toàn rồi mới xoá bản gốc:
+/// 1. chép vào file tạm ẩn cạnh đích (vừa chép vừa băm SHA-256), `fsync`;
+/// 2. đọc lại file tạm, so SHA-256 và dung lượng với bản gốc – lệch (ổ USB lỗi, cáp lỏng) thì bỏ file tạm, bản gốc
+///    giữ nguyên;
+/// 3. đổi tên file tạm thành tên thật (trong cùng thư mục: tức thì, không bao giờ để lại file đích dở dang);
+/// 4. xoá bản gốc.
+///
+/// Ngắt ở bất kỳ bước nào cũng không mất / hỏng sách: trước bước 3 chỉ có file tạm (bị bỏ qua khi quét, được dọn ở
+/// lần sau); sau bước 3 có hai bản y hệt (hiện ở "Trùng chắc chắn").
+pub fn copy_verify_replace(src: &Path, dst: &Path) -> io::Result<()> {
+    recover_interrupted_copy();
+    let meta = std::fs::metadata(src)?;
+    let tmp = temp_copy_path(dst);
+    if tmp.exists() {
+        std::fs::remove_file(&tmp)?;
+    }
+    let marker = inflight_marker();
+    if let Some(d) = marker.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(&marker, tmp.to_string_lossy().as_bytes());
+    let cleanup = |e: io::Error| -> io::Error {
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&marker);
+        e
+    };
+    let src_hash = {
+        let mut from = std::fs::File::open(src)?;
+        let mut to = std::fs::File::create_new(&tmp).map_err(cleanup)?;
+        let r = copy_pulsing(&mut from, &mut to).and_then(|(n, h)| to.sync_all().map(|_| (n, h)));
+        let (n, h) = match r {
+            Ok(x) => x,
+            Err(e) => {
+                drop(to);
+                return Err(cleanup(e));
+            }
+        };
         if let Ok(m) = meta.modified() {
             let _ = to.set_modified(m);
         }
+        if n != meta.len() {
+            drop(to);
+            return Err(cleanup(io::Error::other("đọc bản gốc bị thiếu dữ liệu – đã giữ nguyên file gốc")));
+        }
+        h
+    };
+    let copy_hash = {
+        let mut f = std::fs::File::open(&tmp).map_err(cleanup)?;
+        match copy_pulsing(&mut f, &mut io::sink()) {
+            Ok((n, h)) if n == meta.len() => h,
+            Ok(_) => return Err(cleanup(io::Error::other("bản chép sai dung lượng – đã giữ nguyên file gốc"))),
+            Err(e) => return Err(cleanup(e)),
+        }
+    };
+    if copy_hash != src_hash {
+        return Err(cleanup(io::Error::other("bản chép khác bản gốc (lỗi ổ / cáp?) – đã giữ nguyên file gốc")));
     }
-    if std::fs::metadata(dst)?.len() != meta.len() {
-        let _ = std::fs::remove_file(dst);
-        return Err(io::Error::other("bản copy sai dung lượng – đã giữ nguyên file gốc"));
+    if dst.exists() {
+        return Err(cleanup(io::Error::new(io::ErrorKind::AlreadyExists, "đích đã tồn tại")));
     }
+    std::fs::rename(&tmp, dst).map_err(cleanup)?;
+    let _ = std::fs::remove_file(&marker);
     std::fs::remove_file(src)
 }
 
@@ -280,10 +357,43 @@ pub struct UndoReport {
     pub batch_id: i64,
     pub restored: usize,
     pub failures: Vec<MoveFailure>,
+    /// Dừng giữa chừng: lô chưa hoàn tác xong, hoàn tác lại sẽ làm tiếp.
+    pub cancelled: bool,
 }
 
 /// Hoàn tác một lô di chuyển: trả từng file về đúng chỗ cũ, báo rõ file nào không hoàn tác được.
 pub fn undo_batch(conn: &Connection, cfg: &Config, batch_id: i64) -> Result<UndoReport> {
+    undo_batch_with(conn, cfg, batch_id, None, None)
+}
+
+/// Lô có chuyển file qua ổ khác (cân bằng ổ): hoàn tác cũng phải chép ngược lại – chạy nền, không chạy trong lệnh
+/// giao diện.
+pub fn batch_crosses_drives(conn: &Connection, batch_id: i64) -> Result<bool> {
+    let mut st = conn.prepare(
+        "SELECT src, dst FROM operations WHERE batch_id = ?1 AND kind = 'move' AND status = 'done' AND dst IS NOT NULL",
+    )?;
+    let rows = st.query_map([batch_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (src, dst) = row?;
+        let (a, b) = (Path::new(&src), Path::new(&dst));
+        let pa = a.parent().unwrap_or(a);
+        let pb = b.parent().unwrap_or(b);
+        if !crate::volumes::same_volume(pa, pb) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Như [`undo_batch`], dừng được (`cancel`, trước mỗi file) và báo tiến trình (`phase = "move"`). Dừng giữa chừng thì
+/// lô chưa tính là đã hoàn tác: gọi lại sẽ làm tiếp phần còn lại.
+pub fn undo_batch_with(
+    conn: &Connection,
+    cfg: &Config,
+    batch_id: i64,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    on: Option<crate::OnStep>,
+) -> Result<UndoReport> {
     ensure_writable(cfg)?;
     let (kind, undone): (String, Option<i64>) = conn
         .query_row("SELECT kind, undone_at FROM batches WHERE id = ?1", [batch_id], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -312,7 +422,22 @@ pub fn undo_batch(conn: &Connection, cfg: &Config, batch_id: i64) -> Result<Undo
         v
     };
     let mut rep = UndoReport { batch_id, ..Default::default() };
-    for (op_id, book_id, src, dst) in ops {
+    let total = ops.len();
+    let step = |done: usize| {
+        if let Some(f) = on {
+            f(crate::Step { phase: "move", done, total });
+        }
+    };
+    step(0);
+    for (i, (op_id, book_id, src, dst)) in ops.into_iter().enumerate() {
+        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            rep.cancelled = true;
+            return Ok(rep);
+        }
+        if i > 0 {
+            step(i);
+        }
+        crate::progress::working_on(Path::new(&dst));
         let (srcp, dstp) = (PathBuf::from(&src), PathBuf::from(&dst));
         let fail = |rep: &mut UndoReport, msg: String| -> Result<()> {
             conn.execute("UPDATE operations SET status='undo_failed', message=?2 WHERE id=?1", params![op_id, msg])?;
@@ -346,6 +471,7 @@ pub fn undo_batch(conn: &Connection, cfg: &Config, batch_id: i64) -> Result<Undo
             Err(e) => fail(&mut rep, format!("Không trả về được: {e}"))?,
         }
     }
+    step(total);
     conn.execute("UPDATE batches SET undone_at = ?2 WHERE id = ?1", params![batch_id, now()])?;
     Ok(rep)
 }
