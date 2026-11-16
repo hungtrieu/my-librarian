@@ -622,7 +622,7 @@ fn is_sidecar(p: &Path) -> bool {
     name.starts_with('.') || matches!(stem.as_str(), "description" | "metadata")
 }
 
-fn is_book(p: &Path) -> bool {
+pub(crate) fn is_book(p: &Path) -> bool {
     BOOK_EXT.contains(&ext_of(p).as_str()) && !is_sidecar(p)
 }
 

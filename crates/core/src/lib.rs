@@ -20,6 +20,8 @@ pub mod dedupe;
 #[cfg(feature = "desktop")]
 pub mod deleted;
 pub mod error;
+#[cfg(feature = "desktop")]
+pub mod folders;
 pub mod formats;
 #[cfg(feature = "desktop")]
 pub mod hash;

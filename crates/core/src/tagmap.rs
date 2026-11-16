@@ -390,6 +390,17 @@ pub fn plan(conn: &Connection, cfg: &Config, opts: &PlanOptions) -> Result<Plan>
 /// Chuyển sách theo kế hoạch (lô [`TAGMAP_KIND`], hoàn tác được), tạo thư mục đích nếu chưa có, rồi bỏ các thư mục
 /// con không do ánh xạ quản lý đã rỗng hẳn (thư mục bộ / tác giả đã đi theo sách).
 pub fn apply(conn: &Connection, cfg: &Config, plan: &Plan) -> Result<MoveReport> {
+    apply_with(conn, cfg, plan, None, None)
+}
+
+/// Như [`apply`], dừng được giữa chừng và báo tiến trình (`phase = "move"`, x / y sách).
+pub fn apply_with(
+    conn: &Connection,
+    cfg: &Config,
+    plan: &Plan,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    on: Option<crate::OnStep>,
+) -> Result<MoveReport> {
     if cfg.read_only {
         return Err(Error::ReadOnly);
     }
@@ -403,7 +414,8 @@ pub fn apply(conn: &Connection, cfg: &Config, plan: &Plan) -> Result<MoveReport>
         let dir = dirs.entry(k).or_insert_with(|| crate::volumes::dir_on(Path::new(&m.root), &m.to)).clone();
         reqs.push(MoveRequest { book_id: m.book_id, target_dir: dir });
     }
-    let rep = moves::apply_moves(conn, cfg, &reqs, TAGMAP_KIND)?;
+    let opts = moves::MoveOptions { exact: false, cancel, progress: on };
+    let rep = moves::apply_moves_with(conn, cfg, &reqs, TAGMAP_KIND, &opts)?;
     // Dọn thư mục con đã rỗng (không bao giờ thư mục cấp 1 hay thư mục do ánh xạ quản lý).
     let managed: HashSet<Vec<String>> = Mapping::new(cfg).target_keys().into_iter().collect();
     moves::prune_empty_dirs(cfg, &rep.moved, &|keys| managed.contains(keys));
@@ -416,6 +428,137 @@ pub fn triage_target(mapping: &Mapping, root: &Path, subjects: &str) -> Option<P
         Resolve::Target { rel, .. } => Some(crate::volumes::dir_on(root, &rel)),
         _ => None,
     }
+}
+
+/// Một tag của sách vừa được chuyển khỏi `Khác`, kèm số sách khác cùng tag còn nằm trong `Khác`.
+#[derive(Debug, Clone, Serialize)]
+pub struct OtherTag {
+    pub tag: String,
+    pub key: String,
+    pub books: usize,
+}
+
+/// Gợi ý sau khi người dùng chuyển tay sách từ `Khác` vào một thư mục thể loại: các tag của những cuốn đó, và bao
+/// nhiêu cuốn khác cùng tag còn trong `Khác` (mọi ổ) – để hỏi có chuyển luôn không.
+#[derive(Debug, Clone, Serialize)]
+pub struct OtherSuggestion {
+    /// Thư mục đích (tương đối, `/`).
+    pub target: String,
+    pub tags: Vec<OtherTag>,
+    /// Số sách khác nhau trong `Khác` mang ít nhất một trong các tag.
+    pub books: usize,
+}
+
+/// (thư mục đích, [(khoá tag, cách viết)], mã các sách vừa chuyển vào đó).
+type TargetTags = (String, Vec<(String, String)>, HashSet<i64>);
+
+/// Sách đang nằm trong `Khác` (mọi ổ thư viện) có tag: (sách, thư mục thư viện chứa nó).
+fn books_in_other(conn: &Connection, cfg: &Config) -> Result<Vec<(Book, PathBuf)>> {
+    let libs = crate::dedupe::library_root_ids(conn)?;
+    Ok(db::books_where(conn, "status = 'present' AND in_inbox = 0 AND subjects <> '' ORDER BY path", [])?
+        .into_iter()
+        .filter(|b| libs.contains(&b.root_id) && b.category.as_deref().is_some_and(crate::triage::is_other_dir))
+        .filter_map(|b| {
+            let root = cfg.library_root_of(Path::new(&b.path))?;
+            Some((b, root))
+        })
+        .collect())
+}
+
+/// Xem [`OtherSuggestion`]. `moved`: (mã sách, đường dẫn cũ) của các cuốn vừa chuyển; chỉ xét cuốn chuyển ra từ
+/// `Khác`. Một gợi ý cho mỗi thư mục đích; tag không còn cuốn nào trong `Khác` thì bỏ.
+pub fn other_suggestions(conn: &Connection, cfg: &Config, moved: &[(i64, String)]) -> Result<Vec<OtherSuggestion>> {
+    // thư mục đích → (khoá tag → cách viết)
+    let mut by_target: Vec<TargetTags> = Vec::new();
+    for (id, from) in moved {
+        let from = Path::new(from);
+        let Some(root) = cfg.library_root_of(from) else { continue };
+        let top = from.strip_prefix(&root).ok().and_then(|r| r.components().next());
+        if !top.is_some_and(|c| crate::triage::is_other_dir(&c.as_os_str().to_string_lossy())) {
+            continue;
+        }
+        let Some(b) = db::get_book(conn, *id)? else { continue };
+        let Some(now_root) = cfg.library_root_of(Path::new(&b.path)) else { continue };
+        let Some(target) = Path::new(&b.path)
+            .parent()
+            .and_then(|d| d.strip_prefix(&now_root).ok())
+            .map(|r| r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/"))
+            .filter(|t| !t.is_empty())
+        else {
+            continue;
+        };
+        let tk = blocked::rel_keys(&target);
+        let idx = match by_target.iter().position(|(t, _, _)| blocked::rel_keys(t) == tk) {
+            Some(i) => i,
+            None => {
+                by_target.push((target, Vec::new(), HashSet::new()));
+                by_target.len() - 1
+            }
+        };
+        let entry = &mut by_target[idx];
+        entry.2.insert(*id);
+        for t in split_tags(&b.subjects) {
+            let k = tag_key(&t);
+            if !entry.1.iter().any(|(x, _)| *x == k) {
+                entry.1.push((k, t));
+            }
+        }
+    }
+    if by_target.is_empty() {
+        return Ok(Vec::new());
+    }
+    let other = books_in_other(conn, cfg)?;
+    let other_keys: Vec<(i64, HashSet<String>)> =
+        other.iter().map(|(b, _)| (b.id, split_tags(&b.subjects).iter().map(|t| tag_key(t)).collect())).collect();
+    let mut out = Vec::new();
+    for (target, tags, ids) in by_target {
+        let mut list: Vec<OtherTag> = tags
+            .into_iter()
+            .map(|(key, tag)| {
+                let books = other_keys.iter().filter(|(id, ks)| !ids.contains(id) && ks.contains(&key)).count();
+                OtherTag { tag, key, books }
+            })
+            .filter(|t| t.books > 0)
+            .collect();
+        if list.is_empty() {
+            continue;
+        }
+        list.sort_by(|a, b| b.books.cmp(&a.books).then_with(|| a.key.cmp(&b.key)));
+        let keys: HashSet<&str> = list.iter().map(|t| t.key.as_str()).collect();
+        let books = other_keys
+            .iter()
+            .filter(|(id, ks)| !ids.contains(id) && ks.iter().any(|k| keys.contains(k.as_str())))
+            .count();
+        out.push(OtherSuggestion { target, tags: list, books });
+    }
+    Ok(out)
+}
+
+/// Kế hoạch chuyển mọi sách trong `Khác` mang một trong các `tags` vào thư mục `target` (tương đối). Mỗi cuốn ở lại
+/// ổ của nó (thư mục `target` trên ổ đó được tạo nếu chưa có).
+pub fn plan_from_other(conn: &Connection, cfg: &Config, target: &str, tags: &[String]) -> Result<Plan> {
+    let target = normalize_target(cfg, target)?;
+    let keys: HashSet<String> = tags.iter().map(|t| tag_key(t)).filter(|k| !k.is_empty()).collect();
+    let mut out = Plan::default();
+    for (b, root) in books_in_other(conn, cfg)? {
+        crate::progress::pulse();
+        let Some(tag) = split_tags(&b.subjects).into_iter().find(|t| keys.contains(&tag_key(t))) else { continue };
+        let from = Path::new(&b.path)
+            .parent()
+            .and_then(|d| d.strip_prefix(&root).ok())
+            .map(|r| r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/"))
+            .unwrap_or_default();
+        out.moves.push(PlannedMove {
+            root: root.to_string_lossy().into_owned(),
+            book_id: b.id,
+            title: b.title.clone(),
+            file_name: b.file_name.clone(),
+            from,
+            to: target.clone(),
+            tag,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

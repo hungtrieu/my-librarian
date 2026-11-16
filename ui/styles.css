@@ -335,3 +335,13 @@ table.tag-map tr.changed td { background: color-mix(in srgb, var(--warn) 8%, tra
 .vol-head .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .vol-bar { margin-bottom: 6px; }
 .vol.low .vol-bar i { background: var(--warn); }
+.nav-section.with-add { display: flex; align-items: center; justify-content: space-between; }
+.nav-add { border: 0; background: transparent; color: var(--text-3); font-size: 16px; line-height: 1; width: 22px; height: 22px; border-radius: 6px; cursor: pointer; }
+.nav-add:hover { background: var(--bg-soft); color: var(--text); }
+.meta-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.meta-table th { text-align: left; font-weight: 600; color: var(--text-2); padding: 5px 12px 5px 0; vertical-align: top; white-space: nowrap; width: 1%; }
+.meta-table td { padding: 5px 0; word-break: break-word; }
+.tag-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag.chip { border: 0; cursor: pointer; font-size: 12px; padding: 3px 9px; }
+.tag.chip:hover { background: var(--accent-soft); color: var(--accent); }
+.modal:has(.meta-table) { width: min(640px, 100%); }

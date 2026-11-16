@@ -40,6 +40,8 @@ const inbox = [add({ title: 'Mắt Biếc', file_name: 'Mắt Biếc (1).epub', 
   add({ title: '7 Seeds 36', file_name: '7 Seeds 36.mobi', category: 'Chưa phân loại', in_inbox: true, format: 'mobi' }),
   add({ title: 'Dragon Ball 1', file_name: 'Dragon Ball 1.cbz', category: 'Chưa phân loại', in_inbox: true, format: 'cbz' }),
   add({ title: 'Không rõ', file_name: 'Không rõ.txt', category: 'Chưa phân loại', in_inbox: true, format: 'txt' })];
+// Sách trong "Khác" (chưa rõ thể loại) có tag – để thử "chuyển luôn sách cùng tag".
+for (let i = 1; i <= 24; i++) add({ title: `Truyện chưa rõ ${i}`, authors: `Tác giả ${i % 7}`, category: 'Khác', rel_path: `Khác\\T\\T-01\\Truyện chưa rõ ${i}.epub`, subjects: ['Trinh thám; Mystery', 'Mystery', 'Kinh dị', 'Self-help'][i % 4] });
 add({ title: 'Sách hỏng', file_name: 'Sách hỏng.epub', category: 'Văn học', error: 'zip hỏng: invalid Zip archive' });
 add({ title: 'Sách Kindle mua', authors: 'Amazon', category: 'Văn học', format: 'azw3', drm: true });
 const byId = (id) => books.find((b) => b.id === id);
@@ -47,6 +49,7 @@ const byId = (id) => books.find((b) => b.id === id);
 books.forEach((b, i) => {
   b.subjects = b.category === 'Văn học' ? ['Tiểu thuyết', 'tieu-thuyet', 'Novel', 'Fiction; Classics', 'Văn học Việt Nam'][i % 5]
     : b.category === 'Công nghệ' ? ['Programming', 'Computers; Programming', 'Khoa học'][i % 3]
+      : b.category === 'Khác' ? b.subjects
       : b.category === 'Tiểu sử - Hồi ký' ? ['Biography', 'Hồi ký', 'Memoir; Biography'][i % 3]
         : b.category === 'Ngôn tình - Đam mỹ' ? (b.series === 'Đam mỹ' ? 'Đam mỹ; Romance' : 'Ngôn tình; Romance') : '';
 });
@@ -118,7 +121,8 @@ function query(q) {
   return { total: items.length, offset: q.offset || 0, items: items.slice(q.offset || 0, (q.offset || 0) + (q.limit || 200)) };
 }
 const isBlocked = (rel) => config.blocked_categories.some((r) => fold(rel) === fold(r) || fold(rel).startsWith(fold(r) + '/'));
-const cats = () => ['Công nghệ', 'Ngôn tình - Đam mỹ', 'Tiểu sử - Hồi ký', 'Văn học', 'truyen tranh'].filter((name) => !isBlocked(name)).map((name) => ({ name, books: present().filter((b) => b.category === name).length,
+const catNames = ['Công nghệ', 'Khác', 'Ngôn tình - Đam mỹ', 'Tiểu sử - Hồi ký', 'Văn học', 'truyen tranh'];
+const cats = () => catNames.filter((name) => !isBlocked(name)).map((name) => ({ name, books: present().filter((b) => b.category === name).length,
   series_dirs: name === 'truyen tranh' ? ['7 seeds', 'Conan', 'Doraemon', 'One Piece', 'Slam Dunk'] : name === 'Ngôn tình - Đam mỹ' ? ['Đam mỹ', 'Ngôn tình'].filter((s) => !isBlocked(name + '/' + s)) : [], path: 'E:\\books\\' + name }));
 /** Cây thư mục thể loại (giống blocked::folder_tree): từ đường dẫn sách + mục bị chặn đã dọn. */
 function folderTree() {
@@ -205,6 +209,49 @@ const handlers = {
   cancel_clean: () => { mockClean.cancel = true; },
   category_tree: () => folderTree(),
   tag_list: () => tagList(),
+  other_tag_suggestions: ({ moved }) => {
+    const src = moved.map((m) => byId(m.book_id)).filter(Boolean);
+    if (!src.length) return [];
+    const keys = new Map();
+    src.forEach((b) => splitTags(b.subjects).forEach((t) => keys.set(tagKey(t), t)));
+    const other = present().filter((b) => b.category === 'Khác' && !src.includes(b));
+    const tags = [...keys].map(([key, tag]) => ({ key, tag, books: other.filter((b) => splitTags(b.subjects).some((t) => tagKey(t) === key)).length })).filter((t) => t.books);
+    if (!tags.length) return [];
+    return [{ target: src[0].category, tags, books: other.filter((b) => splitTags(b.subjects).some((t) => tags.some((x) => x.key === tagKey(t)))).length }];
+  },
+  start_move_from_other: ({ target, tags }) => {
+    const keys = tags.map(tagKey);
+    const ids = present().filter((b) => b.category === 'Khác' && splitTags(b.subjects).some((t) => keys.includes(tagKey(t)))).map((b) => b.id);
+    let done = 0; mockClean.cancel = false;
+    const t = setInterval(() => {
+      done = Math.min(ids.length, done + 1);
+      emit('clean-progress', { phase: 'move', done, total: ids.length });
+      if (mockClean.cancel || done >= ids.length) {
+        clearInterval(t);
+        ids.slice(0, done).forEach((id) => { const b = byId(id); b.category = target.split('/')[0]; b.series = null; b.rel_path = target.split('/').join('\\') + '\\' + b.file_name; });
+        emit('clean-done', { ok: true, report: { batch_id: 77, moved: ids.slice(0, done).map((book_id) => ({ book_id })), failures: [], cancelled: mockClean.cancel } });
+      }
+    }, 150);
+  },
+  folder_create: ({ parent, name }) => { if (!parent) catNames.push(name); return parent ? parent + '/' + name : name; },
+  folder_rename: ({ rel, name }) => {
+    const parts = rel.split('/'); const n = present().filter((b) => b.category === parts[0]).length;
+    if (parts.length === 1) { catNames[catNames.indexOf(parts[0])] = name; present().filter((b) => b.category === parts[0]).forEach((b) => { b.category = name; b.rel_path = name + b.rel_path.slice(parts[0].length); }); }
+    return { rel: [...parts.slice(0, -1), name].join('/'), dirs: ['E:\\books\\' + name], books: n, failures: [] };
+  },
+  start_folder_delete: ({ rel }) => {
+    const ids = present().filter((b) => (b.rel_path.split('\\').slice(0, -1).join('/') + '/').startsWith(rel + '/')).map((b) => b.id);
+    let done = 0;
+    const t = setInterval(() => {
+      done = Math.min(ids.length, done + 3);
+      emit('clean-progress', { phase: 'move', done, total: ids.length });
+      if (done >= ids.length) {
+        clearInterval(t);
+        if (!rel.includes('/')) { catNames.splice(catNames.indexOf(rel), 1); ids.forEach((id) => { const b = byId(id); b.category = 'Khác'; b.series = 'X'; b.rel_path = 'Khác\\X\\' + b.file_name; }); }
+        emit('clean-done', { ok: true, report: { moves: { batch_id: 88, moved: ids.map((book_id) => ({ book_id })), failures: [], cancelled: false }, removed: ['E:\\books\\' + rel], kept: [], cancelled: false } });
+      }
+    }, 120);
+  },
   volumes_info: () => [config.library_root, ...config.extra_libraries].map((path, i) => ({ path, primary: i === 0, online: true,
     total_bytes: [1000e9, 2000e9][i % 2], free_bytes: [12e9, 1240e9][i % 2], low: i % 2 === 0, books: i ? 1840 : present().length, book_bytes: i ? 410e9 : 860e9, inbox: i ? 0 : 6 })),
   add_library_folder: () => { const p = 'H:\\sach2'; if (!config.extra_libraries.includes(p)) config.extra_libraries.push(p); return p; },

@@ -10,6 +10,7 @@ use librarian_core::browse::{self, Page, Query};
 use librarian_core::classify::{self, Proposal};
 use librarian_core::covers::CoverCache;
 use librarian_core::dedupe::{self, Decision, ExactGroup, SuspectGroup};
+use librarian_core::folders;
 use librarian_core::formats::Format;
 use librarian_core::moves::{self, BatchInfo, MoveReport, MoveRequest, Operation, UndoReport};
 use librarian_core::progress::{self, Watchdog};
@@ -596,6 +597,94 @@ async fn tag_map_save(state: State<'_, AppState>, changes: Vec<tagmap::Change>, 
         refreshed(lib, |lib| tagmap::apply(&lib.conn, &lib.config, &plan))
     })
     .await
+}
+
+#[derive(Deserialize)]
+struct MovedIn {
+    book_id: i64,
+    from: String,
+}
+
+/// Sau khi chuyển tay sách: những cuốn ra từ `Khác` mang tag gì, và còn bao nhiêu cuốn cùng tag trong `Khác`.
+#[tauri::command]
+async fn other_tag_suggestions(
+    state: State<'_, AppState>,
+    moved: Vec<MovedIn>,
+) -> CmdResult<Vec<tagmap::OtherSuggestion>> {
+    with_lib(&state.lib, move |lib| {
+        let moved: Vec<(i64, String)> = moved.into_iter().map(|m| (m.book_id, m.from)).collect();
+        tagmap::other_suggestions(&lib.conn, &lib.config, &moved)
+    })
+    .await
+}
+
+/// Chuyển mọi sách trong `Khác` mang một trong `tags` vào `target` – ở nền với hộp tiến trình (có thể hàng nghìn
+/// cuốn), dừng được, hoàn tác được. `remember`: ghi luôn các tag đó → `target` vào ánh xạ tag (sách mới cũng vào đây).
+#[tauri::command]
+async fn start_move_from_other(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    target: String,
+    tags: Vec<String>,
+    remember: bool,
+) -> CmdResult<()> {
+    if busy_kind(&state).is_some() {
+        return Err("Đang quét hoặc dọn – đợi xong rồi chuyển".into());
+    }
+    if remember {
+        let (t, tg) = (target.clone(), tags.clone());
+        with_lib(&state.lib, move |lib| {
+            let changes: Vec<tagmap::Change> =
+                tg.into_iter().map(|tag| tagmap::Change { tag, target: Some(t.clone()) }).collect();
+            tagmap::apply_changes(&mut lib.config, &changes)?;
+            lib.save_config()
+        })
+        .await?;
+    }
+    spawn_clean(app, state, move |lib, cancel, on| {
+        let plan = tagmap::plan_from_other(&lib.conn, &lib.config, &target, &tags)?;
+        tagmap::apply_with(&lib.conn, &lib.config, &plan, Some(cancel), Some(on))
+    })
+}
+
+// ------------------------------------------------------------------ thư mục thể loại (thêm / đổi tên / xoá)
+
+/// Thêm thể loại (`parent` trống) hoặc thư mục con. Trả về đường dẫn tương đối mới.
+#[tauri::command]
+async fn folder_create(state: State<'_, AppState>, parent: Option<String>, name: String) -> CmdResult<String> {
+    with_lib(&state.lib, move |lib| folders::create(&lib.config, parent.as_deref(), &name)).await
+}
+
+/// Đổi tên thư mục `rel` trên mọi ổ (thư mục thật trên đĩa), cập nhật đường dẫn sách, danh sách chặn, ánh xạ tag.
+#[tauri::command]
+async fn folder_rename(state: State<'_, AppState>, rel: String, name: String) -> CmdResult<folders::RenameReport> {
+    if busy_kind(&state).is_some() {
+        return Err("Đang quét hoặc dọn – đợi xong rồi đổi tên".into());
+    }
+    with_lib(&state.lib, move |lib| {
+        let rep = folders::rename(&lib.conn, &mut lib.config, &rel, &name)?;
+        lib.save_config()?;
+        Ok(rep)
+    })
+    .await
+}
+
+/// Xoá thư mục `rel` trên mọi ổ ở nền: sách bên trong chuyển ra trước (thể loại → `Khác`, thư mục con → thư mục
+/// cha; hoàn tác được), phần còn lại vào Thùng rác. Cùng hộp tiến trình / dừng như dọn trùng.
+#[tauri::command]
+async fn start_folder_delete(app: AppHandle, state: State<'_, AppState>, rel: String) -> CmdResult<()> {
+    if busy_kind(&state).is_some() {
+        return Err("Đang quét hoặc dọn – đợi xong rồi xoá".into());
+    }
+    let r = rel.clone();
+    with_lib(&state.lib, move |lib| {
+        folders::forget(&mut lib.config, &r)?;
+        lib.save_config()
+    })
+    .await?;
+    spawn_clean(app, state, move |lib, cancel, on| {
+        folders::delete(&lib.conn, &lib.config, &SystemTrasher, &rel, Some(cancel), Some(on))
+    })
 }
 
 // ------------------------------------------------------------------ ổ lưu sách (thư viện trên nhiều ổ)
@@ -1702,6 +1791,11 @@ fn main() {
             tag_map_plan,
             tag_map_save,
             volumes_info,
+            other_tag_suggestions,
+            start_move_from_other,
+            folder_create,
+            folder_rename,
+            start_folder_delete,
             add_library_folder,
             remove_library_folder,
             balance_preview,

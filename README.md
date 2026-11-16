@@ -58,6 +58,12 @@ Chạy lần lượt: format → clippy (`-D warnings`) → test → build relea
 - **Chạy mỗi đêm:** `scripts/register-nightly.ps1 [-At 02:00]` đăng ký Task Scheduler (chạy bù nếu máy tắt đúng giờ); gỡ bằng `-Remove`.
 - **Đóng gói** cần `tauri-cli`: `cargo install tauri-cli --version "^2" --locked`.
 
+## Thư mục thể loại, thông tin & tag của sách
+
+- **Thông tin & tag:** chuột phải lên sách → *Thông tin & tag…*: tag (metadata `subject`), tác giả, bộ, ngôn ngữ, ISBN, số trang, đường dẫn, SHA-256… Bấm một tag để mở nó ở màn *Tag → thể loại*; tag đã gán thể loại hiện kèm thư mục đích.
+- **Chuyển luôn sách cùng tag ra khỏi `Khác`:** chuyển tay (kéo thả / *Chuyển vào thư mục…*) sách từ `Khác` vào một thể loại → app hỏi có chuyển luôn các cuốn khác trong `Khác` (mọi ổ) mang cùng tag không, cho chọn tag, tuỳ chọn ghi nhớ tag → thể loại cho sách mới. Chuyển ở nền với hộp tiến trình, dừng được, hoàn tác được; sách ở lại ổ của nó.
+- **Quản lý thư mục:** chuột phải lên thể loại ở thanh bên (đổi tên, thêm thư mục con, xoá), nút **+** cạnh *Bộ sưu tập*, hoặc Cài đặt → *Thư mục thể loại*. Sửa thẳng thư mục thật trên mọi ổ có thư mục đó; đổi tên cập nhật đường dẫn sách, thể loại bị chặn và tag → thể loại. Xoá: sách bên trong chuyển ra trước (thể loại → `Khác`, thư mục con → thư mục cha, cùng ổ, hoàn tác được), rồi thư mục vào Thùng rác; thư mục còn sách chưa chuyển được thì giữ lại. Hộp thư đến và `Khác` không sửa được. Lõi: `crates/core/src/folders.rs`.
+
 ## Thư viện trên nhiều ổ cứng
 
 Sách nhiều quá một ổ: Cài đặt → **+ Thêm thư mục ở ổ khác…** (vd. thư mục chính `D:\books` + `G:\sach`). Mỗi thư mục có cùng cấu trúc (thể loại ở cấp 1, hộp thư đến riêng); app quét cả hai, và thể loại cùng tên trên các ổ (kể cả khác dấu, vd. `Văn học` / `Van hoc`) hiện làm một.
