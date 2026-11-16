@@ -189,8 +189,9 @@ pub struct TagInfo {
 
 /// Mọi tag của sách trong thư viện (kể cả hộp thư đến), nhiều sách trước; tag đã ánh xạ mà không còn sách nào vẫn có.
 pub fn list_tags(conn: &Connection, cfg: &Config) -> Result<Vec<TagInfo>> {
-    let root = cfg.library_root.as_ref().ok_or(Error::NoLibrary)?;
-    let lib = crate::dedupe::library_root_id(conn)?;
+    if cfg.library_roots().is_empty() {
+        return Err(Error::NoLibrary);
+    }
     #[derive(Default)]
     struct Acc {
         books: i64,
@@ -198,15 +199,17 @@ pub fn list_tags(conn: &Connection, cfg: &Config) -> Result<Vec<TagInfo>> {
         folders: HashMap<String, i64>,
     }
     let mut acc: HashMap<String, Acc> = HashMap::new();
-    let mut st =
-        conn.prepare("SELECT subjects, path FROM books WHERE status = 'present' AND subjects <> '' AND root_id = ?1")?;
-    let rows = st.query_map([lib.unwrap_or(-1)], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut st = conn.prepare(
+        "SELECT b.subjects, b.path FROM books b JOIN roots r ON r.id = b.root_id
+         WHERE b.status = 'present' AND b.subjects <> '' AND r.kind = 'library'",
+    )?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     for row in rows {
         let (subjects, path) = row?;
         crate::progress::pulse();
         let dir: Vec<String> = Path::new(&path)
             .parent()
-            .and_then(|p| p.strip_prefix(root).ok())
+            .and_then(|p| p.strip_prefix(cfg.library_root_of(p)?).ok().map(Path::to_path_buf))
             .map(|r| r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect())
             .unwrap_or_default();
         let folder = if dir.first().is_some_and(|d| crate::triage::is_other_dir(d)) {
@@ -268,6 +271,9 @@ pub struct PlanOptions {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlannedMove {
+    /// Thư mục thư viện (ổ) đang chứa sách; `from` / `to` tương đối so với nó. Khi chuyển, sách ở lại ổ này trừ khi
+    /// ổ sắp đầy (xem `volumes::Placer`).
+    pub root: String,
     pub book_id: i64,
     pub title: String,
     pub file_name: String,
@@ -296,7 +302,9 @@ pub struct Plan {
 
 /// Các sách cần chuyển theo ánh xạ hiện tại của `cfg` (xem mô tả module). Không đụng tới đĩa.
 pub fn plan(conn: &Connection, cfg: &Config, opts: &PlanOptions) -> Result<Plan> {
-    let root = cfg.library_root.as_ref().ok_or(Error::NoLibrary)?;
+    if cfg.library_roots().is_empty() {
+        return Err(Error::NoLibrary);
+    }
     let mapping = Mapping::new(cfg);
     let mut out = Plan::default();
     if mapping.is_empty() {
@@ -307,29 +315,30 @@ pub fn plan(conn: &Connection, cfg: &Config, opts: &PlanOptions) -> Result<Plan>
     // Thư mục do ánh xạ quản lý: đích hiện tại + đích cũ của các tag vừa đổi.
     let mut managed = mapping.target_keys();
     managed.extend(opts.old_targets.iter().map(|t| blocked::rel_keys(t)).filter(|k| !k.is_empty()));
-    let Some(lib) = crate::dedupe::library_root_id(conn)? else { return Ok(out) };
+    let libs = crate::dedupe::library_root_ids(conn)?;
+    if libs.is_empty() {
+        return Ok(out);
+    }
     let books: Vec<Book> = match opts.first_seen_scan {
         Some(s) => db::books_where(
             conn,
-            "status = 'present' AND in_inbox = 0 AND subjects <> '' AND root_id = ?1 AND first_seen_scan = ?2 ORDER BY path",
-            rusqlite::params![lib, s],
+            "status = 'present' AND in_inbox = 0 AND subjects <> '' AND first_seen_scan = ?1 ORDER BY path",
+            [s],
         )?,
-        None => db::books_where(
-            conn,
-            "status = 'present' AND in_inbox = 0 AND subjects <> '' AND root_id = ?1 ORDER BY path",
-            [lib],
-        )?,
+        None => db::books_where(conn, "status = 'present' AND in_inbox = 0 AND subjects <> '' ORDER BY path", [])?,
     };
-    for b in books {
+    for b in books.into_iter().filter(|b| libs.contains(&b.root_id)) {
         crate::progress::pulse();
         if let Some(w) = &wanted {
             if !split_tags(&b.subjects).iter().any(|t| w.contains(&tag_key(t))) {
                 continue;
             }
         }
-        let names: Vec<String> = match Path::new(&b.path).parent().and_then(|p| p.strip_prefix(root).ok()) {
-            Some(r) => r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect(),
-            None => continue,
+        let Some(dir) = Path::new(&b.path).parent() else { continue };
+        let Some(root) = cfg.library_root_of(dir) else { continue };
+        let names: Vec<String> = match dir.strip_prefix(&root) {
+            Ok(r) => r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect(),
+            Err(_) => continue,
         };
         let keys: Vec<String> = names.iter().map(|n| blocked::name_key(n)).collect();
         if blocked.covers(&keys) && !keys.is_empty() {
@@ -366,6 +375,7 @@ pub fn plan(conn: &Connection, cfg: &Config, opts: &PlanOptions) -> Result<Plan>
             continue;
         }
         out.moves.push(PlannedMove {
+            root: root.to_string_lossy().into_owned(),
             book_id: b.id,
             title: b.title.clone(),
             file_name: b.file_name.clone(),
@@ -377,63 +387,33 @@ pub fn plan(conn: &Connection, cfg: &Config, opts: &PlanOptions) -> Result<Plan>
     Ok(out)
 }
 
-/// Thư mục trên đĩa cho đường dẫn tương đối `rel`: dùng thư mục có sẵn (không phân biệt dấu / hoa thường) cho phần
-/// đã có, phần còn lại tạo theo tên trong `rel`.
-fn dir_for(root: &Path, rel: &str) -> PathBuf {
-    let parts = components(rel);
-    for n in (1..=parts.len()).rev() {
-        if let Some(d) = blocked::find_dir(root, &parts[..n].join("/")) {
-            return parts[n..].iter().fold(d, |p, c| p.join(c));
-        }
-    }
-    parts.iter().fold(root.to_path_buf(), |p, c| p.join(c))
-}
-
 /// Chuyển sách theo kế hoạch (lô [`TAGMAP_KIND`], hoàn tác được), tạo thư mục đích nếu chưa có, rồi bỏ các thư mục
 /// con không do ánh xạ quản lý đã rỗng hẳn (thư mục bộ / tác giả đã đi theo sách).
 pub fn apply(conn: &Connection, cfg: &Config, plan: &Plan) -> Result<MoveReport> {
     if cfg.read_only {
         return Err(Error::ReadOnly);
     }
-    let root = cfg.library_root.as_ref().ok_or(Error::NoLibrary)?;
     if plan.moves.is_empty() {
         return Ok(MoveReport::default());
     }
-    let mut dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut dirs: BTreeMap<(String, String), PathBuf> = BTreeMap::new();
     let mut reqs = Vec::new();
     for m in &plan.moves {
-        let k = blocked::rel_keys(&m.to).join("/");
-        let dir = dirs.entry(k).or_insert_with(|| dir_for(root, &m.to)).clone();
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            tracing::warn!("ánh xạ tag: không tạo được {}: {e}", dir.display());
-        }
+        let k = (m.root.clone(), blocked::rel_keys(&m.to).join("/"));
+        let dir = dirs.entry(k).or_insert_with(|| crate::volumes::dir_on(Path::new(&m.root), &m.to)).clone();
         reqs.push(MoveRequest { book_id: m.book_id, target_dir: dir });
     }
     let rep = moves::apply_moves(conn, cfg, &reqs, TAGMAP_KIND)?;
-    // Dọn thư mục con đã rỗng (chỉ thư mục không chứa gì; không bao giờ thư mục cấp 1 hay thư mục quản lý).
+    // Dọn thư mục con đã rỗng (không bao giờ thư mục cấp 1 hay thư mục do ánh xạ quản lý).
     let managed: HashSet<Vec<String>> = Mapping::new(cfg).target_keys().into_iter().collect();
-    let mut tried = HashSet::new();
-    for d in &rep.moved {
-        let mut dir = Path::new(&d.from).parent().map(Path::to_path_buf);
-        while let Some(p) = dir {
-            let keys = blocked::dir_keys(root, &p);
-            if keys.len() < 2 || managed.contains(&keys) || !tried.insert(p.clone()) {
-                break;
-            }
-            if std::fs::read_dir(&p).map(|mut r| r.next().is_some()).unwrap_or(true) || std::fs::remove_dir(&p).is_err()
-            {
-                break;
-            }
-            dir = p.parent().map(Path::to_path_buf);
-        }
-    }
+    moves::prune_empty_dirs(cfg, &rep.moved, &|keys| managed.contains(keys));
     Ok(rep)
 }
 
 /// Đích theo ánh xạ cho tác phẩm có `subjects` trong hộp thư đến (dùng khi tự phân loại).
 pub fn triage_target(mapping: &Mapping, root: &Path, subjects: &str) -> Option<PathBuf> {
     match mapping.resolve(subjects) {
-        Resolve::Target { rel, .. } => Some(dir_for(root, &rel)),
+        Resolve::Target { rel, .. } => Some(crate::volumes::dir_on(root, &rel)),
         _ => None,
     }
 }

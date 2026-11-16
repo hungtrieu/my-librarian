@@ -21,7 +21,7 @@ docs/                BRD, backlog, BUILD.md (build lại Windows + iPad), IPAD.m
 
 **Build bản cài mới sau khi sửa code:** Windows – bấm đúp `build-windows.cmd`; iPad – bấm đúp `build-ipad.command`, iPhone – `build-iphone.command`, Android – `build-android.command` trên Mac. Chỉ build khi code đổi, tự tăng phiên bản và chạy test. Chi tiết: [docs/BUILD.md](docs/BUILD.md).
 
-Dữ liệu app nằm ở `%APPDATA%\my-librarian\` (`library.db`, `config.json`, `logs\`, `backups\`); đổi bằng `--home` hoặc biến `LIBRARIAN_HOME`. Ngoài các file sách bạn duyệt di chuyển/xoá, app không ghi gì vào ổ sách.
+Thư viện có thể trải trên nhiều ổ – xem [Thư viện trên nhiều ổ cứng](#thư-viện-trên-nhiều-ổ-cứng). Dữ liệu app nằm ở `%APPDATA%\my-librarian\` (`library.db`, `config.json`, `logs\`, `backups\`); đổi bằng `--home` hoặc biến `LIBRARIAN_HOME`. Ngoài các file sách bạn duyệt di chuyển/xoá, app không ghi gì vào ổ sách.
 
 ## Build
 
@@ -57,6 +57,15 @@ Chạy lần lượt: format → clippy (`-D warnings`) → test → build relea
 - **Chặn push khi hỏng:** `scripts/install-hooks.ps1` bật hook `.githooks/pre-push` (chạy `ci.ps1 -Quick`). Bỏ qua một lần: `git push --no-verify`.
 - **Chạy mỗi đêm:** `scripts/register-nightly.ps1 [-At 02:00]` đăng ký Task Scheduler (chạy bù nếu máy tắt đúng giờ); gỡ bằng `-Remove`.
 - **Đóng gói** cần `tauri-cli`: `cargo install tauri-cli --version "^2" --locked`.
+
+## Thư viện trên nhiều ổ cứng
+
+Sách nhiều quá một ổ: Cài đặt → **+ Thêm thư mục ở ổ khác…** (vd. thư mục chính `D:\books` + `G:\sach`). Mỗi thư mục có cùng cấu trúc (thể loại ở cấp 1, hộp thư đến riêng); app quét cả hai, và thể loại cùng tên trên các ổ (kể cả khác dấu, vd. `Văn học` / `Van hoc`) hiện làm một.
+
+- **Xếp sách tiết kiệm ổ:** sách luôn ở lại ổ đang chứa nó – phân loại, chuyển tay, ánh xạ tag trong cùng ổ chỉ là đổi tên, tức thì, không chép, không tốn thêm chỗ (thư mục thể loại / thư mục con được tạo ở ổ đó nếu chưa có). Chỉ khi ổ còn trống dưới mức **Giữ trống mỗi ổ** (mặc định 20 GB) thì sách mới sang ổ thư viện còn nhiều chỗ nhất, vào đúng thư mục tương ứng ở ổ đó.
+- **Ổ lưu sách** (thanh bên): dung lượng từng ổ, ổ sắp đầy được đánh dấu; **Chuyển bớt sách sang ổ khác** đề xuất chuyển nguyên thư mục (bộ / tác giả), thư mục lớn trước, sang ổ còn chỗ – chạy nền, dừng được, hoàn tác được (lô `Cân bằng ổ` trong Hoạt động). Mỗi file chép sang ổ mới, kiểm tra đủ dung lượng rồi mới xoá bản cũ.
+- Bản trùng giữa hai ổ hiện ở **Trùng chắc chắn** – dọn đi là lấy lại chỗ. Ổ rời chưa cắm thì bị bỏ qua khi quét, sách trên đó không bị coi là mất.
+- Lõi: `crates/core/src/volumes.rs`; cấu hình `extra_libraries`, `min_free_gb` trong `config.json`.
 
 ## Gán tag → thể loại
 

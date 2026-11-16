@@ -23,7 +23,10 @@ pub struct Category {
     /// Tên thật của thư mục (hiển thị đúng như trên đĩa, có thể không dấu).
     pub name: String,
     pub key: String,
+    /// Thư mục trên thư viện chính (hoặc trên ổ đầu tiên có thể loại này).
     pub path: PathBuf,
+    /// Mọi thư mục cùng thể loại trên các ổ thư viện (thư mục chính trước).
+    pub paths: Vec<PathBuf>,
     pub series_dirs: Vec<SeriesDir>,
 }
 
@@ -40,26 +43,40 @@ fn subdirs(p: &Path) -> Vec<(String, PathBuf)> {
     v
 }
 
-/// Danh mục đọc trực tiếp từ đĩa (E6-01).
+/// Danh mục đọc trực tiếp từ đĩa (E6-01): thư mục cấp 1 của mọi thư mục thư viện, thể loại cùng tên (không phân
+/// biệt dấu / hoa thường) trên các ổ gộp làm một.
 pub fn list_categories(cfg: &Config) -> Result<Vec<Category>> {
-    let root = cfg.library_root.as_ref().ok_or(Error::NoLibrary)?;
+    let roots = cfg.library_roots();
+    if roots.is_empty() {
+        return Err(Error::NoLibrary);
+    }
     let inbox = fold(&cfg.inbox_name);
-    Ok(subdirs(root)
-        .into_iter()
-        .filter(|(n, _)| fold(n) != inbox)
-        .map(|(name, path)| Category {
-            key: fold(&name),
-            series_dirs: subdirs(&path)
+    let mut out: Vec<Category> = Vec::new();
+    for root in &roots {
+        for (name, path) in subdirs(root).into_iter().filter(|(n, _)| fold(n) != inbox) {
+            let key = fold(&name);
+            let series: Vec<SeriesDir> = subdirs(&path)
                 .into_iter()
                 // thư mục chia nhỏ `Khác` (`A`…`Z`, `0-9`, `#`) không phải thư mục bộ
                 .filter(|(n, _)| !(crate::triage::is_other_dir(&name) && crate::triage::is_other_bucket(n)))
                 .map(|(n, p)| SeriesDir { key: normalize_title(&n), name: n, path: p })
                 .filter(|s| s.key.chars().count() >= 2)
-                .collect(),
-            name,
-            path,
-        })
-        .collect())
+                .collect();
+            match out.iter_mut().find(|c| c.key == key) {
+                Some(c) => {
+                    c.paths.push(path);
+                    for s in series {
+                        if !c.series_dirs.iter().any(|x| x.key == s.key) {
+                            c.series_dirs.push(s);
+                        }
+                    }
+                }
+                None => out.push(Category { key, series_dirs: series, paths: vec![path.clone()], path, name }),
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
 }
 
 const STOPWORDS: &[&str] = &[
@@ -138,11 +155,11 @@ impl Model {
     pub fn build(conn: &rusqlite::Connection, cfg: &Config) -> Result<Model> {
         let categories = list_categories(cfg)?;
         let by_key: HashMap<&str, usize> = categories.iter().enumerate().map(|(i, c)| (c.key.as_str(), i)).collect();
-        let lib = crate::dedupe::library_root_id(conn)?;
+        let lib = crate::dedupe::library_root_ids(conn)?;
         let books = db::books_where(conn, "status = 'present' AND category IS NOT NULL AND in_inbox = 0", [])?;
         let docs: Vec<(usize, &Book, HashMap<String, f64>)> = books
             .iter()
-            .filter(|b| Some(b.root_id) == lib)
+            .filter(|b| lib.contains(&b.root_id))
             .filter_map(|b| {
                 let c = *by_key.get(fold(b.category.as_deref()?).as_str())?;
                 Some((c, b, raw_terms(b)))
@@ -334,7 +351,7 @@ fn is_comic_archive(b: &Book) -> bool {
 /// Đề xuất phân loại cho sách trong hộp thư đến (E6-04, E6-05 dùng kết quả này để xem trước).
 pub fn propose(conn: &rusqlite::Connection, cfg: &Config) -> Result<Vec<Proposal>> {
     let model = Model::build(conn, cfg)?;
-    let lib = crate::dedupe::library_root_id(conn)?;
+    let lib = crate::dedupe::library_root_ids(conn)?;
     let inbox = db::books_where(conn, "status = 'present' AND in_inbox = 1 ORDER BY file_name", [])?;
     // Bản thừa = có anh em cùng băm đầy đủ nằm ngoài hộp thư đến.
     let dup_hashes: std::collections::HashSet<String> = {
@@ -348,7 +365,7 @@ pub fn propose(conn: &rusqlite::Connection, cfg: &Config) -> Result<Vec<Proposal
     let comic_cat =
         model.categories.iter().find(|c| ["truyen tranh", "manga", "comic"].iter().any(|k| c.key.contains(k)));
     let mut out = Vec::new();
-    for b in inbox.into_iter().filter(|b| Some(b.root_id) == lib) {
+    for b in inbox.into_iter().filter(|b| lib.contains(&b.root_id)) {
         crate::progress::pulse();
         let bucket_of = |conf: u8| {
             if conf >= cfg.classify_high {
@@ -454,10 +471,10 @@ impl Evaluation {
 /// Đo độ chính xác trên chính kho: giấu nhãn thư mục từng cuốn (leave-one-out) – E6-04.
 pub fn evaluate(conn: &rusqlite::Connection, cfg: &Config) -> Result<Evaluation> {
     let model = Model::build(conn, cfg)?;
-    let lib = crate::dedupe::library_root_id(conn)?;
+    let lib = crate::dedupe::library_root_ids(conn)?;
     let books = db::books_where(conn, "status = 'present' AND category IS NOT NULL AND in_inbox = 0", [])?;
     let mut ev = Evaluation::default();
-    for b in books.iter().filter(|b| Some(b.root_id) == lib) {
+    for b in books.iter().filter(|b| lib.contains(&b.root_id)) {
         let Some(own) = b.category.as_deref().and_then(|c| model.category_index(c)) else { continue };
         let p = model.predict(b, Some(own));
         ev.total += 1;

@@ -226,7 +226,7 @@ pub fn run_analysis_with(
             }
         }
         step(3);
-        if cfg.library_root.as_ref().is_some_and(|r| r.is_dir()) {
+        if cfg.library_online() {
             let props = classify::propose(conn, cfg)?;
             st.inbox_books = props.len();
             st.inbox_proposed = props.iter().filter(|p| p.target.is_some()).count();
@@ -258,7 +258,7 @@ pub fn refresh_counts(conn: &Connection, cfg: &Config) -> Result<()> {
     st.exact_files = groups.iter().map(|g| g.others.len()).sum();
     st.reclaimable_bytes = groups.iter().map(|g| g.reclaimable).sum();
     st.suspect_groups = dedupe::suspect_groups(conn)?.len();
-    if cfg.library_root.as_ref().is_some_and(|r| r.is_dir()) {
+    if cfg.library_online() {
         let props = classify::propose(conn, cfg)?;
         st.inbox_books = props.len();
         st.inbox_proposed = props.iter().filter(|p| p.target.is_some()).count();

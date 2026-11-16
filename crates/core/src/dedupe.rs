@@ -24,12 +24,12 @@ pub struct ExactGroup {
 
 /// Khoá sắp xếp chọn bản giữ (BRD 3.4):
 /// trong thư mục thể loại của thư viện → tên không có hậu tố (1)/copy → đường dẫn nông hơn → file cũ hơn.
-fn keeper_key(b: &Book, library_root_id: Option<i64>) -> (bool, bool, usize, i64, i64) {
-    let in_library_category = Some(b.root_id) == library_root_id && b.category.is_some() && !b.in_inbox;
+fn keeper_key(b: &Book, libs: &[i64]) -> (bool, bool, usize, i64, i64) {
+    let in_library_category = libs.contains(&b.root_id) && b.category.is_some() && !b.in_inbox;
     (!in_library_category, has_copy_suffix(b.stem()), b.depth(), b.mtime, b.id)
 }
 
-fn keep_reason(k: &Book, runner_up: &Book, lib: Option<i64>) -> String {
+fn keep_reason(k: &Book, runner_up: &Book, lib: &[i64]) -> String {
     let a = keeper_key(k, lib);
     let b = keeper_key(runner_up, lib);
     if a.0 != b.0 {
@@ -45,13 +45,15 @@ fn keep_reason(k: &Book, runner_up: &Book, lib: Option<i64>) -> String {
     }
 }
 
-pub fn library_root_id(conn: &Connection) -> Result<Option<i64>> {
-    use rusqlite::OptionalExtension;
-    Ok(conn.query_row("SELECT id FROM roots WHERE kind = 'library' LIMIT 1", [], |r| r.get(0)).optional()?)
+/// Mọi thư mục gốc là thư viện (thư mục chính + các thư mục thêm trên ổ khác).
+pub fn library_root_ids(conn: &Connection) -> Result<Vec<i64>> {
+    let mut st = conn.prepare("SELECT id FROM roots WHERE kind = 'library' ORDER BY id")?;
+    let v = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+    Ok(v)
 }
 
 /// Chọn bản giữ; trả về (chỉ số, lý do).
-pub fn choose_keeper(members: &[Book], lib: Option<i64>) -> (usize, String) {
+pub fn choose_keeper(members: &[Book], lib: &[i64]) -> (usize, String) {
     let mut idx: Vec<usize> = (0..members.len()).collect();
     idx.sort_by_key(|&i| keeper_key(&members[i], lib));
     let k = idx[0];
@@ -61,7 +63,7 @@ pub fn choose_keeper(members: &[Book], lib: Option<i64>) -> (usize, String) {
 
 /// Nhóm trùng chắc chắn hiện có (dựa trên băm đã lưu – gọi `hash::ensure_hashes` trước).
 pub fn exact_groups(conn: &Connection) -> Result<Vec<ExactGroup>> {
-    let lib = library_root_id(conn)?;
+    let lib = library_root_ids(conn)?;
     let books = db::books_where(
         conn,
         "status = 'present' AND full_hash IS NOT NULL AND hash_size = size AND hash_mtime = mtime
@@ -79,7 +81,7 @@ pub fn exact_groups(conn: &Connection) -> Result<Vec<ExactGroup>> {
         if members.len() < 2 {
             continue;
         }
-        let (k, reason) = choose_keeper(&members, lib);
+        let (k, reason) = choose_keeper(&members, &lib);
         let keeper = members.remove(k);
         let size = keeper.size;
         out.push(ExactGroup {
@@ -232,11 +234,11 @@ pub fn group_confidence(members: &[Book]) -> u8 {
 /// Chọn bản giữ trong nhóm nghi trùng (nội dung khác nhau nên ưu tiên bản "đầy đủ" hơn):
 /// trong thư mục thể loại của thư viện → nhiều trang hơn → dung lượng lớn hơn → tên không có hậu tố (1)/copy →
 /// đường dẫn nông hơn → file cũ hơn.
-pub fn choose_suspect_keeper(members: &[Book], library_root_id: Option<i64>) -> usize {
+pub fn choose_suspect_keeper(members: &[Book], library_root_ids: &[i64]) -> usize {
     (0..members.len())
         .min_by_key(|&i| {
             let b = &members[i];
-            let k = keeper_key(b, library_root_id);
+            let k = keeper_key(b, library_root_ids);
             (k.0, std::cmp::Reverse(b.page_count.unwrap_or(0)), std::cmp::Reverse(b.size), k.1, k.2, k.3, k.4)
         })
         .unwrap_or(0)
@@ -530,7 +532,7 @@ pub fn suspect_groups_with(
         let r = dsu.find(*i);
         groups.entry(r).or_default().push(*i);
     }
-    let lib = library_root_id(conn)?;
+    let lib = library_root_ids(conn)?;
     let mut out = Vec::new();
     for (_, mut idx) in groups {
         if idx.len() < 2 {
@@ -544,7 +546,7 @@ pub fn suspect_groups_with(
         let key = members.iter().map(|b| b.id.to_string()).collect::<Vec<_>>().join("-");
         let confidence = group_confidence(&members);
         let real: Vec<Book> = members.iter().filter(|b| b.id > 0).cloned().collect();
-        let keeper_id = real[choose_suspect_keeper(&real, lib)].id;
+        let keeper_id = real[choose_suspect_keeper(&real, &lib)].id;
         let has_deleted = real.len() < members.len();
         out.push(SuspectGroup { key, reason: rs.join("; "), members, confidence, keeper_id, has_deleted });
     }

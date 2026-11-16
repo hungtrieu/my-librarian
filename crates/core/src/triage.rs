@@ -502,6 +502,7 @@ fn sub_dirs(dir: &Path) -> SubDirs {
 /// chọn nó (người dùng đã nói không muốn thể loại đó), không thì dừng ở cấp hiện tại.
 fn descend(
     root: &Path,
+    mirrors: &[PathBuf],
     top: &Path,
     u: &Unit,
     blocked: &crate::blocked::Blocked,
@@ -511,7 +512,24 @@ fn descend(
     let mut fields: Option<Vec<(f64, String)>> = None;
     for _ in 0..SUB_DEPTH {
         let keys = crate::blocked::dir_keys(root, &dir);
-        let mut subs = cache.entry(dir.clone()).or_insert_with(|| sub_dirs(&dir)).clone();
+        // Thư mục con ở ổ này cộng thư mục con cùng chỗ ở các ổ thư viện khác (thể loại trải trên nhiều ổ).
+        let mut subs = cache
+            .entry(dir.clone())
+            .or_insert_with(|| {
+                let mut v = sub_dirs(&dir);
+                let rel = keys.join("/");
+                for m in mirrors {
+                    let Some(md) = crate::blocked::find_dir(m, &rel) else { continue };
+                    for (n, t) in sub_dirs(&md) {
+                        let k = crate::blocked::name_key(&n);
+                        if !v.iter().any(|(x, _)| crate::blocked::name_key(x) == k) {
+                            v.push((n, t));
+                        }
+                    }
+                }
+                v
+            })
+            .clone();
         for b in blocked.children(&keys) {
             let k = crate::blocked::name_key(&b);
             if !subs.iter().any(|(n, _)| crate::blocked::name_key(n) == k) {
@@ -899,10 +917,19 @@ pub fn bucket_other(cfg: &Config, opts: &TriageOptions) -> Result<BucketReport> 
         return Err(Error::ReadOnly);
     }
     let mut rep = BucketReport { dry_run: opts.dry_run, ..Default::default() };
-    let Some(other) = classify::list_categories(cfg)?.into_iter().find(|c| is_other_dir(&c.name)).map(|c| c.path)
-    else {
-        return Ok(rep);
-    };
+    let others = classify::list_categories(cfg)?.into_iter().find(|c| is_other_dir(&c.name)).map(|c| c.paths);
+    for other in others.unwrap_or_default() {
+        bucket_other_dir(cfg, &other, opts, &mut rep)?;
+        if rep.cancelled {
+            break;
+        }
+    }
+    Ok(rep)
+}
+
+/// [`bucket_other`] cho thư mục `Khác` của một ổ.
+fn bucket_other_dir(cfg: &Config, other: &Path, opts: &TriageOptions, rep: &mut BucketReport) -> Result<()> {
+    let other = other.to_path_buf();
     crate::progress::working_on(&other);
     // File sách nằm thẳng ở gốc `Khác` hoặc thẳng trong thư mục chữ cái (`Khác/T/x.epub`) – chưa vào ngăn.
     let mut files: Vec<(PathBuf, String, u64)> = Vec::new();
@@ -931,7 +958,7 @@ pub fn bucket_other(cfg: &Config, opts: &TriageOptions) -> Result<BucketReport> 
         collect(&d, &mut files, &mut Vec::new());
     }
     if files.is_empty() {
-        return Ok(rep);
+        return Ok(());
     }
     files.sort_by(|a, b| a.1.cmp(&b.1));
     let cancelled = || opts.cancel.is_some_and(|c| c.load(Ordering::Relaxed));
@@ -990,22 +1017,82 @@ pub fn bucket_other(cfg: &Config, opts: &TriageOptions) -> Result<BucketReport> 
         t.commit()?;
     }
     report(rep.moved_files.min(total), total);
-    Ok(rep)
+    Ok(())
 }
 
-/// Tự phân loại toàn bộ hộp thư đến theo mô tả ở đầu module.
+impl TriageReport {
+    fn merge(&mut self, o: TriageReport) {
+        self.units += o.units;
+        self.moved_files += o.moved_files;
+        for (k, v) in o.by_category {
+            *self.by_category.entry(k).or_default() += v;
+        }
+        self.to_other += o.to_other;
+        for d in o.created_dirs {
+            if !self.created_dirs.contains(&d) {
+                self.created_dirs.push(d);
+            }
+        }
+        self.duplicates_trashed += o.duplicates_trashed;
+        self.junk_files_trashed += o.junk_files_trashed;
+        self.dirs_trashed += o.dirs_trashed;
+        self.blocked_trashed += o.blocked_trashed;
+        for (k, v) in o.blocked {
+            *self.blocked.entry(k).or_default() += v;
+        }
+        self.failures.extend(o.failures);
+        self.cancelled |= o.cancelled;
+    }
+}
+
+/// Tự phân loại toàn bộ hộp thư đến theo mô tả ở đầu module – hộp thư đến của từng ổ thư viện. Sách ở lại ổ của
+/// hộp thư đến chứa nó (đổi tên tức thì, không tốn chỗ); ổ sắp đầy thì sang ổ thư viện còn chỗ (`volumes.rs`).
 pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<TriageReport> {
     if cfg.read_only {
         return Err(Error::ReadOnly);
     }
-    let root = cfg.library_root.as_ref().ok_or(Error::NoLibrary)?;
+    let roots = cfg.library_roots();
+    if roots.is_empty() {
+        return Err(Error::NoLibrary);
+    }
+    let mut placer = crate::volumes::Placer::new(cfg);
+    let mut rep = TriageReport { dry_run: opts.dry_run, ..Default::default() };
+    for root in &roots {
+        if !root.is_dir() {
+            continue;
+        }
+        rep.merge(run_root(cfg, root, &roots, trasher, opts, &mut placer)?);
+        if rep.cancelled {
+            break;
+        }
+    }
+    Ok(rep)
+}
+
+fn run_root(
+    cfg: &Config,
+    root: &Path,
+    roots: &[PathBuf],
+    trasher: &dyn Trasher,
+    opts: &TriageOptions,
+    placer: &mut crate::volumes::Placer,
+) -> Result<TriageReport> {
+    let mirrors: Vec<PathBuf> = roots.iter().filter(|r| r.as_path() != root).cloned().collect();
     let inbox = root.join(&cfg.inbox_name);
     let mut rep = TriageReport { dry_run: opts.dry_run, ..Default::default() };
     if !inbox.is_dir() {
         return Ok(rep);
     }
-    let mut cats: Vec<(String, PathBuf)> =
-        classify::list_categories(cfg)?.into_iter().map(|c| (c.name, c.path)).collect();
+    // Thể loại của mọi ổ, đường dẫn tính trên ổ này (có thể chưa có thư mục ở ổ này – tạo khi cần).
+    let mut cats: Vec<(String, PathBuf)> = classify::list_categories(cfg)?
+        .into_iter()
+        .map(|c| {
+            let p = c.paths.iter().find(|p| p.starts_with(root)).cloned().unwrap_or_else(|| root.join(&c.name));
+            (c.name, p)
+        })
+        .collect();
+    // Thể loại đã có thư mục ở một ổ nào đó (để không báo "tạo thư mục mới" khi chỉ là thêm ở ổ khác).
+    let mut known: HashSet<String> = cats.iter().map(|(n, _)| fold(n)).collect();
     // Thể loại bị chặn mà thư mục đã được dọn khỏi đĩa: vẫn là "thư mục có sẵn" của luật tương ứng, để sách cùng
     // thể loại được nhận ra (và vào Thùng rác) thay vì tạo lại thư mục theo tên mặc định.
     let blocked = crate::blocked::Blocked::new(cfg);
@@ -1105,7 +1192,7 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
     // Mở giao dịch (giữ chỗ ghi) sau bước đoán thể loại, để không chặn kết nối khác suốt bước đó.
     let mut tx = conn.map(crate::db::write_tx).transpose()?;
     let mut listings: HashMap<PathBuf, DirListing> = HashMap::new();
-    let mut shelves: Option<Shelves> = None;
+    let mut shelves: HashMap<PathBuf, Shelves> = HashMap::new();
     let mut sub_cache: HashMap<PathBuf, SubDirs> = HashMap::new();
     let mut created: HashSet<PathBuf> = HashSet::new();
     for (ci, chunk) in units.chunks(MOVE_CHUNK).enumerate() {
@@ -1183,7 +1270,7 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
             let dest_dir = if is_other || mapped.is_some() {
                 cat_dir.clone()
             } else {
-                descend(root, &cat_dir, u, &blocked, &mut sub_cache)
+                descend(root, &mirrors, &cat_dir, u, &blocked, &mut sub_cache)
             };
             if !is_other && !blocked.is_empty() {
                 let keys = crate::blocked::dir_keys(root, &dest_dir);
@@ -1201,14 +1288,20 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
                 }
             }
             *rep.by_category.entry(label.clone()).or_default() += 1;
-            if !cat_dir.is_dir() && created.insert(cat_dir.clone()) {
-                // Thể loại chưa có thư mục: tạo mới.
+            // Chọn ổ: ở lại ổ này (đổi tên tức thì), trừ khi ổ sắp đầy (volumes.rs).
+            let unit_size: u64 = u.files.iter().map(|(_, s)| *s).sum();
+            let dest_dir = placer.place(&u.files[0].0, unit_size, &dest_dir);
+            let cat_dir = if is_other { dest_dir.clone() } else { cat_dir };
+            if !dest_dir.is_dir() && created.insert(dest_dir.clone()) {
+                // Thư mục chưa có ở ổ này: tạo mới.
                 if !opts.dry_run {
-                    std::fs::create_dir_all(&cat_dir)?;
+                    std::fs::create_dir_all(&dest_dir)?;
                 }
-                rep.created_dirs.push(label.clone());
-                if mapped.is_none() && !cats.iter().any(|(_, p)| *p == cat_dir) {
-                    cats.push((label.clone(), cat_dir.clone()));
+                if mapped.is_none() && known.insert(fold(&label)) {
+                    rep.created_dirs.push(label.clone());
+                    if !cats.iter().any(|(_, p)| *p == cat_dir) {
+                        cats.push((label.clone(), cat_dir.clone()));
+                    }
                 }
             }
             if is_other {
@@ -1216,7 +1309,8 @@ pub fn run(cfg: &Config, trasher: &dyn Trasher, opts: &TriageOptions) -> Result<
                 let first = u.files[0].0.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 crate::progress::working_on(&cat_dir);
                 let shelf = shelves
-                    .get_or_insert_with(|| Shelves::new(&cat_dir, opts.dry_run))
+                    .entry(cat_dir.clone())
+                    .or_insert_with(|| Shelves::new(&cat_dir, opts.dry_run))
                     .place(&other_bucket(&first), u.files.len())?;
                 for (f, size) in &u.files {
                     let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

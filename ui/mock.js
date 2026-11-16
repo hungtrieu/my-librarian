@@ -51,7 +51,7 @@ books.forEach((b, i) => {
         : b.category === 'Ngôn tình - Đam mỹ' ? (b.series === 'Đam mỹ' ? 'Đam mỹ; Romance' : 'Ngôn tình; Romance') : '';
 });
 const present = () => books.filter((b) => !b.gone);
-let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_clean_exact_in_background: false, auto_triage: true, auto_reject_deleted: true, blocked_categories: [], tag_map: [], classify_high: 75, classify_medium: 45, hash_threads: 3, scan_time: '03:00' };
+let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_clean_exact_in_background: false, auto_triage: true, auto_reject_deleted: true, blocked_categories: [], tag_map: [], extra_libraries: ['G:\\sach'], min_free_gb: 20, classify_high: 75, classify_medium: 45, hash_threads: 3, scan_time: '03:00' };
 const decided = new Set();
 const TEXT = new Set(['epub', 'mobi', 'prc', 'azw', 'azw3', 'kf8', 'fb2', 'txt']);
 // Hai thiết bị mẫu; ?nodevices=1 để xem lúc chưa ghép.
@@ -205,6 +205,21 @@ const handlers = {
   cancel_clean: () => { mockClean.cancel = true; },
   category_tree: () => folderTree(),
   tag_list: () => tagList(),
+  volumes_info: () => [config.library_root, ...config.extra_libraries].map((path, i) => ({ path, primary: i === 0, online: true,
+    total_bytes: [1000e9, 2000e9][i % 2], free_bytes: [12e9, 1240e9][i % 2], low: i % 2 === 0, books: i ? 1840 : present().length, book_bytes: i ? 410e9 : 860e9, inbox: i ? 0 : 6 })),
+  add_library_folder: () => { const p = 'H:\\sach2'; if (!config.extra_libraries.includes(p)) config.extra_libraries.push(p); return p; },
+  remove_library_folder: ({ path }) => { const n = config.extra_libraries.length; config.extra_libraries = config.extra_libraries.filter((p) => p !== path); return n !== config.extra_libraries.length; },
+  balance_preview: () => ({ needed: 8e9, bytes: 9.6e9, groups: [['Văn học/Nguyễn Nhật Ánh', 42, 3.1e9], ['truyen tranh/One Piece', 105, 2.9e9], ['Công nghệ/O\'Reilly', 60, 2.2e9], ['Tiểu sử - Hồi ký/Walter Isaacson', 12, 1.4e9]]
+    .map(([rel, books, bytes]) => ({ rel, books, bytes, from_root: config.library_root, to_root: config.extra_libraries[0], book_ids: [] })) }),
+  start_balance: () => {
+    let done = 0; const total = 219;
+    mockClean.cancel = false;
+    const t = setInterval(() => {
+      done = Math.min(total, done + 7);
+      emit('clean-progress', { phase: 'move', done, total });
+      if (mockClean.cancel || done >= total) { clearInterval(t); emit('clean-done', { ok: true, report: { batch_id: 99, moved: Array.from({ length: done }, (_, i) => ({ book_id: i })), failures: [], cancelled: mockClean.cancel } }); }
+    }, 120);
+  },
   tag_map_plan: ({ changes, all }) => tagPlan(changes, all).plan,
   tag_map_save: ({ changes, all }) => {
     const { plan, map } = tagPlan(changes, all);

@@ -166,7 +166,10 @@ pub struct FolderNode {
 /// Cây thư mục thể loại tới độ sâu `max_depth` (trừ hộp thư đến và `Khác`), kèm số sách và các mục bị chặn
 /// (kể cả đã không còn trên đĩa).
 pub fn folder_tree(conn: &Connection, cfg: &Config, max_depth: usize) -> Result<Vec<FolderNode>> {
-    let root = cfg.library_root.as_ref().ok_or(Error::NoLibrary)?;
+    let roots = cfg.library_roots();
+    if roots.is_empty() {
+        return Err(Error::NoLibrary);
+    }
     let blocked = Blocked::new(cfg);
     let mut out = Vec::new();
     let inbox = name_key(&cfg.inbox_name);
@@ -201,14 +204,25 @@ pub fn folder_tree(conn: &Connection, cfg: &Config, max_depth: usize) -> Result<
             walk(&p, &r, depth + 1, max, skip, out);
         }
     }
+    // Mọi ổ thư viện; thư mục cùng tên trên các ổ là một mục (giữ tên ở ổ đầu tiên).
     let mut found: Vec<(Vec<String>, String)> = Vec::new();
-    walk(root, &[], 1, max_depth.max(1), &skip, &mut found);
+    for root in &roots {
+        let mut f = Vec::new();
+        walk(root, &[], 1, max_depth.max(1), &skip, &mut f);
+        for (rel, name) in f {
+            let k: Vec<String> = rel.iter().map(|c| name_key(c)).collect();
+            if !found.iter().any(|(r, _)| r.len() == k.len() && r.iter().zip(&k).all(|(a, b)| name_key(a) == *b)) {
+                found.push((rel, name));
+            }
+        }
+    }
     // Số sách theo từng cấp thư mục (một lần đọc DB).
     let mut counts: std::collections::HashMap<Vec<String>, i64> = std::collections::HashMap::new();
     let mut st = conn.prepare("SELECT path FROM books WHERE status = 'present'")?;
     let paths = st.query_map([], |r| r.get::<_, String>(0))?;
     for p in paths.flatten() {
-        let keys = dir_keys(root, Path::new(&p));
+        let Some(root) = cfg.library_root_of(Path::new(&p)) else { continue };
+        let keys = dir_keys(&root, Path::new(&p));
         // bỏ thành phần cuối (tên file)
         for d in 1..keys.len().min(max_depth + 1) {
             *counts.entry(keys[..d].to_vec()).or_default() += 1;
@@ -281,7 +295,10 @@ pub fn enforce(
     if cfg.read_only {
         return Err(Error::ReadOnly);
     }
-    let root = cfg.library_root.as_ref().ok_or(Error::NoLibrary)?;
+    let roots = cfg.library_roots();
+    if roots.is_empty() {
+        return Err(Error::NoLibrary);
+    }
     let blocked = Blocked::new(cfg);
     let rels: Vec<String> = match only {
         Some(r) => vec![normalize(cfg, r)?],
@@ -292,8 +309,14 @@ pub fn enforce(
             f(Step { phase, done, total });
         }
     };
-    let dirs: Vec<PathBuf> = rels.iter().filter_map(|r| find_dir(root, r)).collect();
-    let dir_keys_list: Vec<Vec<String>> = dirs.iter().map(|d| dir_keys(root, d)).collect();
+    // Thư mục bị chặn trên mọi ổ thư viện.
+    let dirs: Vec<(PathBuf, PathBuf)> = roots
+        .iter()
+        .flat_map(|root| rels.iter().filter_map(move |r| Some((root.clone(), find_dir(root, r)?))))
+        .collect();
+    let dir_keys_list: Vec<(PathBuf, Vec<String>)> =
+        dirs.iter().map(|(root, d)| (root.clone(), dir_keys(root, d))).collect();
+    let dirs: Vec<PathBuf> = dirs.into_iter().map(|(_, d)| d).collect();
     let mut rep = TrashReport::default();
     if dirs.is_empty() {
         return Ok(rep);
@@ -303,8 +326,11 @@ pub fn enforce(
     let mut books: Vec<Book> = Vec::new();
     for b in db::books_where(conn, "status = 'present' ORDER BY path", [])? {
         crate::progress::pulse();
-        let keys = dir_keys(root, Path::new(&b.path));
-        if dir_keys_list.iter().any(|k| !k.is_empty() && keys.len() > k.len() && keys[..k.len()] == k[..]) {
+        let p = Path::new(&b.path);
+        if dir_keys_list.iter().any(|(root, k)| {
+            let keys = dir_keys(root, p);
+            p.starts_with(root) && !k.is_empty() && keys.len() > k.len() && keys[..k.len()] == k[..]
+        }) {
             books.push(b);
         }
     }

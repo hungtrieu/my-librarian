@@ -573,7 +573,7 @@ fn route(sh: &Shared, req: &mut tiny_http::Request) -> Result<Resp> {
     let Some(rest) = path.strip_prefix("/api/v1/") else { return Ok(err_resp(404, "Không có")) };
     let conn = db::open(&sh.home.join("library.db"))?;
     let config = Config::load(&sh.home)?;
-    let drive = config.library_root.as_ref().is_some_and(|r| r.is_dir());
+    let drive = config.library_online();
     let lib_id = library_id(&conn)?;
 
     let body = |req: &mut tiny_http::Request| -> Result<String> {

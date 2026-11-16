@@ -54,6 +54,8 @@ pub mod testdata;
 pub mod trash;
 #[cfg(feature = "desktop")]
 pub mod triage;
+#[cfg(feature = "desktop")]
+pub mod volumes;
 
 pub use config::Config;
 pub use error::{Error, Result};
@@ -112,8 +114,34 @@ impl Library {
             return Err(Error::msg(format!("{} không phải thư mục", root.display())));
         }
         self.config.library_root = Some(root.to_path_buf());
+        self.config.extra_libraries.retain(|r| !config::same_path(r, root));
         self.save_config()?;
-        db::ensure_root(&self.conn, &root.to_string_lossy(), "library")?;
+        db::sync_library_roots(&self.conn, &self.config)?;
         Ok(())
+    }
+
+    /// Thêm một thư mục thư viện (thường ở ổ khác, vd. `G:\sach`) – xem `volumes.rs`.
+    #[cfg(feature = "desktop")]
+    pub fn add_library_root(&mut self, root: &Path) -> Result<()> {
+        volumes::check_new_root(&self.config, root)?;
+        if self.config.library_root.is_none() {
+            return self.set_library_root(root);
+        }
+        self.config.extra_libraries.push(root.to_path_buf());
+        self.save_config()?;
+        db::sync_library_roots(&self.conn, &self.config)?;
+        Ok(())
+    }
+
+    /// Bỏ một thư mục thư viện thêm khỏi app (không đụng tới file trên ổ). Thư mục chính thì không bỏ được.
+    pub fn remove_library_root(&mut self, root: &Path) -> Result<bool> {
+        let before = self.config.extra_libraries.len();
+        self.config.extra_libraries.retain(|r| !config::same_path(r, root));
+        if before == self.config.extra_libraries.len() {
+            return Ok(false);
+        }
+        self.save_config()?;
+        db::sync_library_roots(&self.conn, &self.config)?;
+        Ok(true)
     }
 }

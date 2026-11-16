@@ -74,6 +74,7 @@ addEventListener('blur', hideMenu);
 async function refreshOverview() {
   S.ov = await call('overview');
   S.devices = await call('ipad_devices').catch(() => []);
+  S.volumes = await call('volumes_info').catch(() => []);
   if (S.ov.notice) modal({ title: 'Đã khôi phục dữ liệu thư viện', body: S.ov.notice, cancel: null, ok: 'Đã hiểu' });
   S.scanning = S.scanning || S.ov.scanning;
   if (S.ov.cleaning && !CL.el) openCleanModal(); // giao diện tải lại khi đang dọn trùng ở nền
@@ -123,6 +124,7 @@ function renderNav() {
     ov.facets.on_ipad ? navItem('Có trên iPad/iPhone', '▭', { name: 'library', scope: 'ipad' }, ov.facets.on_ipad) : null,
     ov.facets.problems ? navItem('Không đọc được', '⚠', { name: 'library', scope: 'problems' }, ov.facets.problems) : null,
     h('div', { class: 'nav-section' }, 'Khác'),
+    navItem('Ổ lưu sách', '◫', { name: 'volumes' }, null, (S.volumes || []).filter((v) => v.low || !v.online).length || null),
     navItem('iPad / iPhone', '▭', { name: 'ipad' }),
     navItem('Hoạt động', '↺', { name: 'activity' }),
     navItem('Cài đặt', '⚙', { name: 'settings' }));
@@ -179,6 +181,7 @@ function progressText(p) {
     case 'trash': return { text: `Đang đưa sách đã xoá trước đây (tải lại) vào Thùng rác ${of('file')}`, pct };
     case 'block': return { text: `Đang xoá sách thuộc thể loại bị chặn ${of('file')}`, pct };
     case 'block_clean': return { text: 'Đang dọn thư mục bị chặn…', pct: null };
+    case 'move': return { text: `Đang chuyển sách ${of('file')}`, pct };
     case 'analyze': {
       const part = ['tìm trùng chắc chắn', 'dọn trùng chắc chắn', 'tìm nghi trùng', 'đề xuất thể loại'][p.done || 0] || 'hoàn tất';
       return { text: `Đang phân tích: ${part} (phần ${Math.min((p.done || 0) + 1, p.total || 4)} / ${p.total || 4})`, pct };
@@ -264,8 +267,9 @@ api.listen('scan-done', async (e) => {
 // Lõi gửi `clean-progress` ({ phase: 'trash' | 'refresh', done, total }), `clean-health` mỗi giây (giám sát treo)
 // và đúng một `clean-done`. Hộp này không đóng được bằng Esc / bấm ra ngoài – chỉ "Dừng" hoặc khi xong.
 const CL = { el: null, progress: null, health: null, stopping: false, kind: 'exact' };
-const CL_TITLE = { exact: 'Đang dọn trùng chắc chắn', suspects: 'Đang tự dọn nghi trùng ≥85%', block: 'Đang xoá sách trong thư mục bị chặn' };
+const CL_TITLE = { exact: 'Đang dọn trùng chắc chắn', suspects: 'Đang tự dọn nghi trùng ≥85%', block: 'Đang xoá sách trong thư mục bị chặn', balance: 'Đang chuyển sách sang ổ khác' };
 const CL_NOTE = {
+  balance: 'Mỗi file được chép sang ổ mới, kiểm tra đủ dung lượng rồi mới xoá bản cũ. Dừng giữa chừng an toàn: sách đã chuyển giữ nguyên ở ổ mới (hoàn tác được ở Hoạt động), phần còn lại ở ổ cũ.',
   block: 'Sách vào Thùng rác Windows (khôi phục được). Dừng giữa chừng an toàn: thư mục vẫn bị chặn, phần còn lại được dọn ở lần quét sau.',
 };
 
@@ -297,6 +301,8 @@ function paintClean() {
   else if (p?.phase === 'trash') { text = `Đã đưa ${n(p.done)} / ${n(p.total)} bản thừa vào Thùng rác`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
   else if (p?.phase === 'block') { text = p.total ? `Đã đưa ${n(p.done)} / ${n(p.total)} sách vào Thùng rác` : 'Đang tìm sách trong thư mục bị chặn…'; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
   else if (p?.phase === 'block_clean') text = 'Đang đưa thư mục bị chặn vào Thùng rác…';
+  else if (p?.phase === 'move') { text = `Đã chuyển ${n(p.done)} / ${n(p.total)} sách sang ổ khác`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
+  else if (p?.phase === 'refresh' && CL.kind === 'balance') text = 'Đã chuyển xong – đang cập nhật số liệu…';
   else if (p?.phase === 'suspect_hash') { text = `Đang tính độ tin cậy nghi trùng: ${n(p.done)} / ${n(p.total)} file`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
   else if (p?.phase === 'refresh') text = 'Đã xoá xong – đang cập nhật số liệu trùng / nghi trùng…';
   CL.txt.textContent = text;
@@ -337,10 +343,15 @@ api.listen('clean-done', async (e) => {
   const p = e.payload;
   const kind = CL.kind;
   if (kind === 'suspects') S.autoSuspectsDone = true; // đã thử tự dọn trong phiên này – không tự chạy lại liên tục
-  const what = kind === 'block' ? 'xoá sách bị chặn' : 'dọn trùng';
+  const what = kind === 'block' ? 'xoá sách bị chặn' : kind === 'balance' ? 'chuyển sách sang ổ khác' : 'dọn trùng';
   if (!p.ok && stalled) modal({ title: `Đã dừng ${what} vì bị treo`, body: p.message, cancel: null, ok: 'Đã hiểu' });
   else if (!p.ok) fail(`Lỗi khi ${what}: ` + p.message);
-  else if (kind === 'block') {
+  else if (kind === 'balance') {
+    const r = p.report;
+    if (r.moved.length) toast((r.cancelled ? 'Đã dừng: ' : '') + `Đã chuyển ${r.moved.length.toLocaleString('vi-VN')} sách sang ổ khác.`, { action: { label: 'Hoàn tác', run: () => undo(r.batch_id) }, ms: 9000 });
+    else if (!r.failures.length) toast('Không có sách nào cần chuyển.');
+    if (r.failures.length) fail(`${r.failures.length} file không chuyển được: ${r.failures[0].message}`);
+  } else if (kind === 'block') {
     const r = p.report;
     const msg = r.cancelled ? `Đã dừng: ${r.trashed} sách vào Thùng rác. Thư mục vẫn bị chặn – phần còn lại được dọn ở lần quét sau.`
       : `Đã chặn “${CL.label}”: ${r.trashed} sách vào Thùng rác (${fmtBytes(r.freed_bytes)}).`;
@@ -353,7 +364,7 @@ api.listen('clean-done', async (e) => {
     if (r.cancelled && (r.failures.length || r.aborted)) reportTrash({ ...r, trashed: 0 });
   }
   await refreshOverview().catch(fail);
-  if (S.view.name === 'dupes' || S.view.name === 'suspects' || S.view.name === 'settings' || kind === 'block') render();
+  if (S.view.name === 'dupes' || S.view.name === 'suspects' || S.view.name === 'settings' || S.view.name === 'volumes' || kind === 'block') render();
 });
 
 // ------------------------------------------------------------------ thể loại bị chặn
@@ -424,7 +435,7 @@ function render() {
   grid = null;
   const v = S.view.name;
   ({ library: renderLibrary, series: renderLibrary, dupes: renderDupes, suspects: renderSuspects, classify: renderClassify,
-    activity: renderActivity, settings: renderSettings, ipad: renderIpad, tags: renderTags })[v]();
+    activity: renderActivity, settings: renderSettings, ipad: renderIpad, tags: renderTags, volumes: renderVolumes })[v]();
 }
 
 function toolbar(title, sub, ...tools) {
@@ -1383,12 +1394,87 @@ async function renderTags() {
   view.replaceChildren(host, bar);
 }
 
+// ------------------------------------------------------------------ ổ lưu sách (thư viện trên nhiều ổ)
+async function addLibraryFolder() {
+  try {
+    const p = await call('add_library_folder');
+    if (!p) return;
+    toast(`Đã thêm “${p}” vào thư viện. Đang quét…`);
+    await refreshOverview();
+    render();
+    startScan();
+  } catch (e) { fail(e); }
+}
+
+async function removeLibraryFolder(path) {
+  const ok = await modal({ title: `Bỏ “${path}” khỏi thư viện?`, body: 'File trên ổ giữ nguyên, app chỉ thôi quản lý thư mục này (sách trong đó không còn được phân loại / cân bằng). Thêm lại lúc nào cũng được.', ok: 'Bỏ khỏi thư viện' });
+  if (!ok) return;
+  try { await call('remove_library_folder', { path }); } catch (e) { return fail(e); }
+  await refreshOverview().catch(fail);
+  render();
+}
+
+/** Màn "Ổ lưu sách": dung lượng từng ổ thư viện, thêm / bỏ ổ, chuyển bớt sách từ ổ sắp đầy sang ổ còn chỗ. */
+async function renderVolumes() {
+  toolbar('Ổ lưu sách', 'thư viện trên nhiều ổ cứng', h('button', { class: 'btn', onclick: addLibraryFolder }, '+ Thêm thư mục ở ổ khác…'));
+  let vols;
+  try { vols = S.volumes = await call('volumes_info'); } catch (e) { return fail(e); }
+  const minGb = S.ov.config.min_free_gb;
+  const GB = 1024 ** 3;
+  const host = h('div', { class: 'pad' });
+  for (const v of vols) {
+    const used = v.total_bytes ? 1 - v.free_bytes / v.total_bytes : 0;
+    host.append(h('div', { class: 'vol' + (v.low ? ' low' : '') + (v.online ? '' : ' offline') },
+      h('div', { class: 'vol-head' },
+        h('span', { class: 'path grow' }, v.path), v.primary ? h('span', { class: 'tag' }, 'chính') : null,
+        !v.online ? h('span', { class: 'tag bad' }, 'chưa kết nối') : v.low ? h('span', { class: 'tag warn' }, `còn dưới ${minGb} GB`) : null,
+        !v.primary ? h('button', { class: 'btn small', onclick: () => removeLibraryFolder(v.path) }, 'Bỏ') : null),
+      v.online ? h('div', { class: 'progress vol-bar', title: `Đã dùng ${Math.round(used * 100)}%` }, h('i', { class: 'det', style: `width:${Math.round(used * 100)}%` })) : null,
+      h('div', { class: 'muted small' }, (v.online ? `Còn trống ${fmtBytes(v.free_bytes)} / ${fmtBytes(v.total_bytes)} · ` : '')
+        + `${v.books.toLocaleString('vi-VN')} sách (${fmtBytes(v.book_bytes)})` + (v.inbox ? ` · ${v.inbox.toLocaleString('vi-VN')} chờ phân loại` : ''))));
+  }
+  host.append(h('div', { class: 'muted small', style: 'margin:14px 0' },
+    'Cách app xếp sách để tiết kiệm ổ: sách luôn ở lại ổ đang chứa nó – chuyển trong cùng ổ chỉ là đổi tên, tức thì, không tốn thêm chỗ. ',
+    `Chỉ khi ổ còn dưới ${minGb} GB (đổi trong Cài đặt) thì sách mới phân loại / chuyển tay mới sang ổ còn nhiều chỗ, vào đúng thư mục thể loại tương ứng ở ổ đó. `,
+    'Bản trùng giữa hai ổ hiện ở “Trùng chắc chắn” – dọn đi là lấy lại chỗ.'));
+  const online = vols.filter((v) => v.online);
+  if (online.length >= 2) {
+    const fromSel = h('select', { class: 'pill', 'aria-label': 'Chuyển bớt từ ổ' }, ...online.map((v) => h('option', { value: v.path, selected: v.low }, v.path)));
+    const gb = h('input', { type: 'number', min: 1, value: Math.max(1, Math.ceil(Math.max(0, ...online.filter((v) => v.low).map((v) => minGb - v.free_bytes / GB)))) || 10, style: 'width:90px', 'aria-label': 'Số GB' });
+    host.append(h('div', { class: 'field' }, h('label', {}, 'Chuyển bớt sách sang ổ khác'),
+      h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, 'Từ', fromSel, 'chuyển ít nhất', gb, 'GB',
+        h('button', { class: 'btn primary', onclick: () => previewBalance(fromSel.value, +gb.value) }, 'Xem trước…')),
+      h('div', { class: 'hint' }, 'Chuyển nguyên thư mục (bộ, tác giả…), thư mục lớn trước, sang ổ còn chỗ – giữ nguyên đường dẫn thể loại. Chép xong, kiểm tra đủ dung lượng mới xoá bản cũ; hoàn tác được.')));
+  } else if (vols.length < 2) {
+    host.append(h('div', { class: 'empty', style: 'min-height:200px' }, h('div', {}, h('h2', {}, 'Mới có một ổ'),
+      h('p', {}, 'Sách nhiều quá một ổ cứng? Thêm một thư mục ở ổ khác (vd. G:\\sach) – app quét cả hai, gộp thể loại cùng tên, và tự xếp sách mới sang ổ còn chỗ.'))));
+  }
+  view.replaceChildren(host);
+}
+
+async function previewBalance(from, wantGb) {
+  if (S.ov.config.read_only) return fail('Đang bật chế độ chỉ đọc – tắt trong Cài đặt để chuyển sách.');
+  let plan;
+  try { plan = await call('balance_preview', { from, wantGb }); } catch (e) { return fail(e); }
+  if (!plan.groups.length) return modal({ title: 'Không có gì để chuyển', body: 'Không tìm được thư mục nào vừa ổ còn chỗ (mỗi ổ đích phải còn trên mức giữ trống sau khi nhận).', cancel: null, ok: 'Đóng' });
+  const books = plan.groups.reduce((s, g) => s + g.books, 0);
+  const list = h('div', { class: 'block-tree' }, ...plan.groups.slice(0, 500).map((g) => h('div', { class: 'block-row' },
+    h('span', { class: 'grow', title: g.rel }, relLabel(g.rel)),
+    h('span', { class: 'muted small', style: 'white-space:nowrap' }, `${g.books} sách · ${fmtBytes(g.bytes)} → ${g.to_root}`))));
+  const ok = await modal({ title: `Chuyển ${fmtBytes(plan.bytes)} sang ổ khác?`, ok: `Chuyển ${books.toLocaleString('vi-VN')} sách`,
+    content: h('div', {}, h('p', { class: 'small' }, `${plan.groups.length.toLocaleString('vi-VN')} thư mục, ${books.toLocaleString('vi-VN')} sách. Chạy nền, dừng được giữa chừng.`), list) });
+  if (!ok) return;
+  CL.kind = 'balance';
+  openCleanModal();
+  try { await call('start_balance', { from, wantGb }); } catch (e) { closeCleanModal(); fail(e); }
+}
+
 // ------------------------------------------------------------------ hoạt động (E5-05, E9-04, E8-04)
 async function renderActivity() {
   toolbar('Hoạt động', 'nhật ký xoá / di chuyển / hoàn tác', h('button', { class: 'btn', onclick: () => call('open_recycle_bin').catch(fail) }, 'Mở Thùng rác'));
   let batches, reports;
   try { [batches, reports] = await Promise.all([call('list_batches'), call('report_history')]); } catch (e) { return fail(e); }
-  const kinds = { dedupe: 'Dọn trùng', trash: 'Xoá', classify: 'Phân loại', manual: 'Chuyển tay', retitle: 'Sửa tiêu đề', block: 'Chặn thể loại', tagmap: 'Tag → thể loại' };
+  const kinds = { dedupe: 'Dọn trùng', trash: 'Xoá', classify: 'Phân loại', manual: 'Chuyển tay', retitle: 'Sửa tiêu đề', block: 'Chặn thể loại', tagmap: 'Tag → thể loại', balance: 'Cân bằng ổ' };
   const host = h('div', { class: 'pad' });
   if (!batches.length) host.append(h('p', { class: 'muted' }, 'Chưa có thao tác nào.'));
   for (const b of batches) {
@@ -1539,7 +1625,13 @@ function renderSettings() {
     ...[['', 'Theo Windows'], ['light', 'Sáng'], ['dark', 'Tối']].map(([v, l]) => h('option', { value: v, selected: load('theme', '') === v }, l)));
   const evalOut = h('span', { class: 'muted small' });
   const form = h('div', { class: 'form pad' },
-    field('Thư mục thư viện', h('div', { style: 'display:flex;gap:8px;align-items:center;min-width:0' }, h('span', { class: 'path', style: 'flex:1' }, c.library_root || '(chưa chọn)'), h('button', { class: 'btn', onclick: chooseLibrary }, 'Đổi…'))),
+    field('Thư mục thư viện', h('div', {},
+      h('div', { style: 'display:flex;gap:8px;align-items:center;min-width:0' }, h('span', { class: 'path', style: 'flex:1' }, c.library_root || '(chưa chọn)'), h('button', { class: 'btn', onclick: chooseLibrary }, 'Đổi…')),
+      ...(c.extra_libraries || []).map((p) => h('div', { style: 'display:flex;gap:8px;align-items:center;min-width:0;margin-top:6px' }, h('span', { class: 'path', style: 'flex:1' }, p), h('button', { class: 'btn', onclick: () => removeLibraryFolder(p) }, 'Bỏ'))),
+      h('button', { class: 'btn', style: 'margin-top:6px', onclick: addLibraryFolder }, '+ Thêm thư mục ở ổ khác…')),
+      'Sách nhiều quá một ổ: thêm thư mục ở ổ khác (vd. G:\\sach). Thể loại cùng tên trên các ổ được gộp làm một. Xem dung lượng và cân bằng ở “Ổ lưu sách”.'),
+    field('Giữ trống mỗi ổ', h('input', { type: 'number', min: 0, max: 100000, value: c.min_free_gb, onchange: (e) => { c.min_free_gb = Math.max(0, +e.target.value || 0); } }),
+      'GB. Ổ còn trống dưới mức này thì sách mới / sách được phân loại tự sang ổ thư viện còn chỗ.'),
     field('Thư mục hộp thư đến', h('input', { type: 'text', value: c.inbox_name, onchange: (e) => { c.inbox_name = e.target.value.trim() || 'Chưa phân loại'; } }), 'Tên thư mục con trong thư viện chứa sách mới. Thư mục này không bao giờ là đích phân loại.'),
     field('Bỏ qua thư mục', h('input', { type: 'text', value: c.exclude_names.join('; '), onchange: (e) => { c.exclude_names = e.target.value.split(';').map((s) => s.trim()).filter(Boolean); } }), 'Phân cách bằng dấu ;'),
     field('Chế độ chỉ đọc', chk('read_only', 'Không xoá, không di chuyển file nào'), 'Bật khi thử trên kho thật để đối chiếu kết quả trước.'),

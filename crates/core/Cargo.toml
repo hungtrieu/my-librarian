@@ -11,7 +11,7 @@ name = "librarian_core"
 [features]
 default = ["desktop", "reader"]
 # Phần chỉ có ở app máy tính: quét, hash song song, dedupe, phân loại, Thùng rác, RAR, log ra file.
-desktop = ["reader", "dep:tiny_http", "dep:getrandom", "dep:walkdir", "dep:trash", "dep:rayon", "dep:unrar", "dep:tracing-subscriber", "dep:tracing-appender"]
+desktop = ["reader", "dep:tiny_http", "dep:getrandom", "dep:walkdir", "dep:trash", "dep:rayon", "dep:unrar", "dep:tracing-subscriber", "dep:tracing-appender", "dep:fs4"]
 # Phần đọc sách (định dạng, bìa, reader.rs) – dùng chung với app iPad.
 reader = []
 
@@ -37,6 +37,7 @@ unrar = { version = "0.5", optional = true }
 tiny_http = { version = "0.12", optional = true }
 getrandom = { version = "0.2", optional = true }
 ureq = { version = "2", default-features = false }
+fs4 = { version = "1.1.0", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

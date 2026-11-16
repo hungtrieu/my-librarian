@@ -9,8 +9,15 @@ pub const DEFAULT_INBOX: &str = "Chưa phân loại";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Thư mục thư viện duy nhất (D2), vd. `E:\books`.
+    /// Thư mục thư viện chính, vd. `D:\books`.
     pub library_root: Option<PathBuf>,
+    /// Thư mục thư viện thêm, thường ở ổ khác (vd. `G:\sach`) khi một ổ không đủ chỗ. Mỗi thư mục có cùng cấu trúc
+    /// (thể loại ở cấp 1, hộp thư đến riêng); thể loại cùng tên trên các ổ được gộp làm một trong app. Xem
+    /// `volumes.rs`.
+    pub extra_libraries: Vec<PathBuf>,
+    /// Dung lượng trống tối thiểu muốn giữ trên mỗi ổ thư viện (GB). Ổ xuống dưới mức này thì sách mới / sách
+    /// được phân loại đi sang ổ còn chỗ, và màn "Ổ lưu sách" đề xuất chuyển bớt.
+    pub min_free_gb: u64,
     /// Tên thư mục hộp thư đến bên trong `library_root` (D10).
     pub inbox_name: String,
     /// Thư mục nguồn phụ (E1-01, tuỳ chọn).
@@ -49,6 +56,8 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             library_root: None,
+            extra_libraries: Vec::new(),
+            min_free_gb: 20,
             inbox_name: DEFAULT_INBOX.to_string(),
             extra_roots: Vec::new(),
             exclude_names: vec!["$RECYCLE.BIN".into(), "System Volume Information".into(), ".Trashes".into()],
@@ -101,16 +110,49 @@ impl Config {
         self.library_root.as_ref().map(|r| r.join(&self.inbox_name))
     }
 
+    /// Mọi thư mục thư viện: thư mục chính trước, rồi các thư mục thêm (bỏ trùng).
+    pub fn library_roots(&self) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = Vec::new();
+        for r in self.library_root.iter().chain(&self.extra_libraries) {
+            if !v.iter().any(|x| same_path(x, r)) {
+                v.push(r.clone());
+            }
+        }
+        v
+    }
+
+    /// Thư mục thư viện chứa `path` (thư mục sâu nhất nếu lồng nhau).
+    pub fn library_root_of(&self, path: &Path) -> Option<PathBuf> {
+        self.library_roots().into_iter().filter(|r| path.starts_with(r)).max_by_key(|r| r.components().count())
+    }
+
+    /// Có ít nhất một thư mục thư viện đang truy cập được.
+    pub fn library_online(&self) -> bool {
+        self.library_roots().iter().any(|r| r.is_dir())
+    }
+
     /// Mọi thư mục gốc cần quét: thư viện trước, rồi các nguồn phụ.
     pub fn roots(&self) -> Vec<(PathBuf, &'static str)> {
         let mut v = Vec::new();
-        if let Some(r) = &self.library_root {
-            v.push((r.clone(), "library"));
+        for r in self.library_roots() {
+            v.push((r, "library"));
         }
         for r in &self.extra_roots {
-            v.push((r.clone(), "source"));
+            if !v.iter().any(|(x, _)| same_path(x, r)) {
+                v.push((r.clone(), "source"));
+            }
         }
         v
+    }
+}
+
+/// Hai đường dẫn cùng một thư mục (Windows không phân biệt hoa thường).
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        a.to_string_lossy().to_lowercase().trim_end_matches(['\\', '/'])
+            == b.to_string_lossy().to_lowercase().trim_end_matches(['\\', '/'])
+    } else {
+        a == b
     }
 }
 

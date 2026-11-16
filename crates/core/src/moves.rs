@@ -35,6 +35,8 @@ pub struct MoveReport {
     pub batch_id: i64,
     pub moved: Vec<MoveDone>,
     pub failures: Vec<MoveFailure>,
+    /// Dừng giữa chừng (phần đã chuyển giữ nguyên, hoàn tác được).
+    pub cancelled: bool,
 }
 
 /// `dir/name.ext`, hoặc `dir/name (1).ext`, `dir/name (2).ext`… nếu đã có.
@@ -62,12 +64,29 @@ pub fn move_file(src: &Path, dst: &Path) -> io::Result<()> {
     }
 }
 
+/// Chép từng khúc 4 MB, mỗi khúc một nhịp cho bộ giám sát treo (chép file vài GB sang ổ USB có thể mất vài phút).
+fn copy_pulsing(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u64> {
+    let mut buf = vec![0u8; 4 << 20];
+    let mut n = 0u64;
+    loop {
+        let k = match from.read(&mut buf) {
+            Ok(0) => return Ok(n),
+            Ok(k) => k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        to.write_all(&buf[..k])?;
+        n += k as u64;
+        crate::progress::pulse();
+    }
+}
+
 fn copy_then_delete(src: &Path, dst: &Path) -> io::Result<()> {
     let meta = std::fs::metadata(src)?;
     {
         let mut from = std::fs::File::open(src)?;
         let mut to = std::fs::File::create_new(dst)?;
-        let r = io::copy(&mut from, &mut to).and_then(|_| to.sync_all());
+        let r = copy_pulsing(&mut from, &mut to).and_then(|_| to.sync_all());
         if let Err(e) = r {
             drop(to);
             let _ = std::fs::remove_file(dst);
@@ -92,36 +111,78 @@ fn ensure_writable(cfg: &Config) -> Result<()> {
     }
 }
 
+/// Tuỳ chọn cho [`apply_moves_with`].
+#[derive(Default)]
+pub struct MoveOptions<'a> {
+    /// Chuyển đúng vào thư mục yêu cầu (cân bằng ổ). Mặc định: chọn ổ tiết kiệm bằng [`crate::volumes::Placer`] –
+    /// sách ở lại ổ đang nằm (đổi tên tức thì), trừ khi ổ đó sắp đầy.
+    pub exact: bool,
+    /// Dừng trước file tiếp theo.
+    pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
+    /// Tiến trình (`phase = "move"`, x / y file).
+    pub progress: Option<crate::OnStep<'a>>,
+}
+
 /// Áp dụng một lô di chuyển (sau khi người dùng bấm "Áp dụng" ở màn xem trước).
-/// Thư mục đích phải đã tồn tại và nằm trong thư viện (D3: không tạo thư mục mới).
+/// Thư mục đích phải nằm trong thư viện (một trong các ổ thư viện).
 pub fn apply_moves(conn: &Connection, cfg: &Config, reqs: &[MoveRequest], kind: &str) -> Result<MoveReport> {
+    apply_moves_with(conn, cfg, reqs, kind, &MoveOptions::default())
+}
+
+/// Như [`apply_moves`], kèm [`MoveOptions`].
+pub fn apply_moves_with(
+    conn: &Connection,
+    cfg: &Config,
+    reqs: &[MoveRequest],
+    kind: &str,
+    opts: &MoveOptions,
+) -> Result<MoveReport> {
     ensure_writable(cfg)?;
-    let lib = cfg.library_root.as_ref().ok_or(Error::NoLibrary)?;
+    if !cfg.library_online() {
+        return Err(Error::NoLibrary);
+    }
     let batch = db::new_batch(conn, kind, None)?;
     let mut rep = MoveReport { batch_id: batch, ..Default::default() };
-    for r in reqs {
+    let mut placer = crate::volumes::Placer::new(cfg);
+    let step = |done: usize| {
+        if let Some(f) = opts.progress {
+            f(crate::Step { phase: "move", done, total: reqs.len() });
+        }
+    };
+    step(0);
+    for (i, r) in reqs.iter().enumerate() {
+        if opts.cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            rep.cancelled = true;
+            break;
+        }
+        if i > 0 {
+            step(i);
+        }
         let Some(b) = db::get_book(conn, r.book_id)? else { continue };
         let fail = |rep: &mut MoveReport, msg: String| -> Result<()> {
             db::log_op(conn, batch, "move", Some(b.id), &b.path, None, Some(b.size), "failed", Some(&msg))?;
             rep.failures.push(MoveFailure { book_id: b.id, path: b.path.clone(), message: msg });
             Ok(())
         };
-        if !r.target_dir.is_dir() {
-            fail(&mut rep, format!("Thư mục đích không tồn tại: {}", r.target_dir.display()))?;
-            continue;
-        }
-        if !r.target_dir.starts_with(lib) {
+        let Some(lib) = cfg.library_root_of(&r.target_dir) else {
             fail(&mut rep, "Thư mục đích nằm ngoài thư viện".into())?;
             continue;
-        }
+        };
         let src = PathBuf::from(&b.path);
+        let target_dir =
+            if opts.exact { r.target_dir.clone() } else { placer.place(&src, b.size.max(0) as u64, &r.target_dir) };
+        let lib = cfg.library_root_of(&target_dir).unwrap_or(lib);
+        if !lib.is_dir() {
+            fail(&mut rep, format!("Ổ thư viện chưa kết nối: {}", lib.display()))?;
+            continue;
+        }
         // Chuyển vào `Khác` → vào thẳng ngăn của chữ cái đầu (`Khác\T\T-01\…`), không làm phẳng lại `Khác`.
-        let into_other = r.target_dir.parent() == Some(lib.as_path())
-            && r.target_dir.file_name().is_some_and(|n| crate::triage::is_other_dir(&n.to_string_lossy()));
+        let into_other = target_dir.parent() == Some(lib.as_path())
+            && target_dir.file_name().is_some_and(|n| crate::triage::is_other_dir(&n.to_string_lossy()));
         if into_other {
             let letter = crate::triage::other_bucket(&b.file_name);
             let in_shelf = src.parent().is_some_and(|shelf| {
-                shelf.parent() == Some(r.target_dir.join(&letter).as_path())
+                shelf.parent() == Some(target_dir.join(&letter).as_path())
                     && shelf
                         .file_name()
                         .is_some_and(|n| crate::triage::other_shelf_number(&letter, &n.to_string_lossy()).is_some())
@@ -129,23 +190,28 @@ pub fn apply_moves(conn: &Connection, cfg: &Config, reqs: &[MoveRequest], kind: 
             if in_shelf {
                 continue; // đã ở đúng chỗ
             }
-        } else if src.parent() == Some(r.target_dir.as_path()) {
+        } else if src.parent() == Some(target_dir.as_path()) {
             continue; // đã ở đúng chỗ
         }
         if !src.is_file() {
             fail(&mut rep, "File nguồn không còn tồn tại".into())?;
             continue;
         }
+        crate::progress::working_on(&src);
+        if let Err(e) = std::fs::create_dir_all(&target_dir) {
+            fail(&mut rep, format!("Không tạo được thư mục {}: {e}", target_dir.display()))?;
+            continue;
+        }
         let target = if into_other {
-            match crate::triage::Shelves::new(&r.target_dir, false).dir_for(&b.file_name) {
+            match crate::triage::Shelves::new(&target_dir, false).dir_for(&b.file_name) {
                 Ok(d) => d,
                 Err(e) => {
-                    fail(&mut rep, format!("Không tạo được ngăn trong {}: {e}", r.target_dir.display()))?;
+                    fail(&mut rep, format!("Không tạo được ngăn trong {}: {e}", target_dir.display()))?;
                     continue;
                 }
             }
         } else {
-            r.target_dir.clone()
+            target_dir.clone()
         };
         let dst = unique_dest(&target, &b.file_name);
         match move_file(&src, &dst) {
@@ -181,7 +247,32 @@ pub fn apply_moves(conn: &Connection, cfg: &Config, reqs: &[MoveRequest], kind: 
             Err(e) => fail(&mut rep, format!("Không di chuyển được: {e}"))?,
         }
     }
+    if !rep.cancelled {
+        step(reqs.len());
+    }
     Ok(rep)
+}
+
+/// Sau một lô di chuyển: bỏ các thư mục nguồn đã rỗng hẳn (không còn file / thư mục nào), đi ngược lên dần.
+/// Không bao giờ bỏ thư mục gốc hay thư mục thể loại cấp 1, hoặc thư mục mà `keep` (khoá từng cấp, tương đối so với
+/// thư mục thư viện) giữ lại. Chỉ trong thư viện.
+pub fn prune_empty_dirs(cfg: &Config, moved: &[MoveDone], keep: &dyn Fn(&[String]) -> bool) {
+    let mut tried = std::collections::HashSet::new();
+    for d in moved {
+        let mut dir = Path::new(&d.from).parent().map(Path::to_path_buf);
+        let Some(root) = dir.as_deref().and_then(|p| cfg.library_root_of(p)) else { continue };
+        while let Some(p) = dir {
+            let keys = crate::blocked::dir_keys(&root, &p);
+            if keys.len() < 2 || keep(&keys) || !tried.insert(p.clone()) {
+                break;
+            }
+            if std::fs::read_dir(&p).map(|mut r| r.next().is_some()).unwrap_or(true) || std::fs::remove_dir(&p).is_err()
+            {
+                break;
+            }
+            dir = p.parent().map(Path::to_path_buf);
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize)]

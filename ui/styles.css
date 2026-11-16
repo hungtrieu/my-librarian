@@ -328,3 +328,10 @@ body.dragging #nav .nav-item:not([data-drop]) { opacity: 0.5; }
 table.tag-map td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); }
 table.tag-map tr.changed td { background: color-mix(in srgb, var(--warn) 8%, transparent); }
 .modal:has(.block-tree) .block-row .muted { max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+.vol { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
+.vol.low { border-color: color-mix(in srgb, var(--warn) 60%, var(--line)); }
+.vol.offline { opacity: .7; }
+.vol-head { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 8px; }
+.vol-head .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.vol-bar { margin-bottom: 6px; }
+.vol.low .vol-bar i { background: var(--warn); }

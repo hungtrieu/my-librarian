@@ -19,6 +19,7 @@ use librarian_core::retitle::{self, RetitleOptions, RetitleReport};
 use librarian_core::scan::ScanProgress;
 use librarian_core::tagmap;
 use librarian_core::trash::{self, SystemTrasher, TrashReport};
+use librarian_core::volumes;
 use librarian_core::Step;
 use librarian_core::{config, db, lock, Config, Library};
 use serde::{Deserialize, Serialize};
@@ -133,7 +134,7 @@ async fn overview(state: State<'_, AppState>) -> CmdResult<Overview> {
     let cleaning = is_cleaning(&state);
     let home = state.home.to_string_lossy().into_owned();
     with_lib(&state.lib, move |lib| {
-        let library_ok = lib.config.library_root.as_ref().is_some_and(|r| r.is_dir());
+        let library_ok = lib.config.library_online();
         let counts = librarian_core::search::category_counts(&lib.conn)?;
         let categories = if library_ok {
             classify::list_categories(&lib.config)?
@@ -193,14 +194,15 @@ async fn save_config(state: State<'_, AppState>, config: Config) -> CmdResult<()
     with_lib(&state.lib, move |lib| {
         // Danh sách chặn chỉ đổi qua block_category / unblock_category, ánh xạ tag qua tag_map_save (form Cài đặt
         // có thể giữ bản cũ).
+        // Thư mục thư viện thêm chỉ đổi qua add_library_folder / remove_library_folder.
         let blocked = std::mem::take(&mut lib.config.blocked_categories);
         let tag_map = std::mem::take(&mut lib.config.tag_map);
+        let extra = std::mem::take(&mut lib.config.extra_libraries);
         lib.config = config;
         lib.config.blocked_categories = blocked;
         lib.config.tag_map = tag_map;
-        if let Some(r) = lib.config.library_root.clone() {
-            db::ensure_root(&lib.conn, &r.to_string_lossy(), "library")?;
-        }
+        lib.config.extra_libraries = extra;
+        db::sync_library_roots(&lib.conn, &lib.config)?;
         lib.save_config()
     })
     .await
@@ -596,6 +598,76 @@ async fn tag_map_save(state: State<'_, AppState>, changes: Vec<tagmap::Change>, 
     .await
 }
 
+// ------------------------------------------------------------------ ổ lưu sách (thư viện trên nhiều ổ)
+
+/// Các thư mục thư viện kèm dung lượng ổ, số sách.
+#[tauri::command]
+async fn volumes_info(state: State<'_, AppState>) -> CmdResult<Vec<volumes::Volume>> {
+    with_lib(&state.lib, |lib| volumes::list(&lib.conn, &lib.config)).await
+}
+
+/// Chọn một thư mục (thường ở ổ khác) rồi thêm vào thư viện. `None` = người dùng huỷ hộp chọn.
+#[tauri::command]
+async fn add_library_folder(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Option<String>> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Chọn thư mục sách thêm (thường ở ổ khác)")
+            .blocking_pick_folder()
+            .and_then(|p| p.into_path().ok())
+    })
+    .await
+    .map_err(err)?;
+    let Some(path) = picked else { return Ok(None) };
+    let shown = path.to_string_lossy().into_owned();
+    with_lib(&state.lib, move |lib| lib.add_library_root(&path)).await?;
+    Ok(Some(shown))
+}
+
+/// Bỏ một thư mục thư viện thêm khỏi app (file trên ổ giữ nguyên).
+#[tauri::command]
+async fn remove_library_folder(state: State<'_, AppState>, path: String) -> CmdResult<bool> {
+    if busy_kind(&state).is_some() {
+        return Err("Đang quét hoặc dọn – đợi xong rồi bỏ thư mục".into());
+    }
+    with_lib(&state.lib, move |lib| lib.remove_library_root(Path::new(&path))).await
+}
+
+/// Xem trước cân bằng ổ: thư mục nào chuyển từ ổ nào sang ổ nào. `from` + `want_gb`: chuyển bớt chừng ấy khỏi ổ đó;
+/// bỏ trống thì chỉ xét ổ dưới mức trống tối thiểu.
+#[tauri::command]
+async fn balance_preview(
+    state: State<'_, AppState>,
+    from: Option<String>,
+    want_gb: Option<f64>,
+) -> CmdResult<volumes::BalancePlan> {
+    with_lib(&state.lib, move |lib| balance_plan_for(lib, from.as_deref(), want_gb)).await
+}
+
+fn balance_plan_for(
+    lib: &Library,
+    from: Option<&str>,
+    want_gb: Option<f64>,
+) -> librarian_core::Result<volumes::BalancePlan> {
+    let want = want_gb.filter(|g| *g > 0.0).map(|g| (g * 1024.0 * 1024.0 * 1024.0) as u64);
+    volumes::balance_plan(&lib.conn, &lib.config, from.map(Path::new), want)
+}
+
+/// Cân bằng ổ ở nền (chép sang ổ khác có thể lâu): tính lại kế hoạch rồi chuyển, cùng hộp tiến trình / giám sát treo /
+/// nút Dừng như dọn trùng (`clean-progress` bước `move`, `clean-done` mang `MoveReport`). Hoàn tác được.
+#[tauri::command]
+fn start_balance(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    from: Option<String>,
+    want_gb: Option<f64>,
+) -> CmdResult<()> {
+    spawn_clean(app, state, move |lib, cancel, on| {
+        let plan = balance_plan_for(lib, from.as_deref(), want_gb)?;
+        volumes::apply_balance(&lib.conn, &lib.config, &plan, Some(cancel), Some(on))
+    })
+}
+
 // ------------------------------------------------------------------ trùng lặp
 
 #[tauri::command]
@@ -613,7 +685,8 @@ async fn exact_groups(state: State<'_, AppState>) -> CmdResult<Vec<ExactGroup>> 
 struct CleanDone {
     ok: bool,
     message: Option<String>,
-    report: Option<TrashReport>,
+    /// Báo cáo của việc vừa chạy (`TrashReport` khi dọn / chặn, `MoveReport` khi cân bằng ổ).
+    report: Option<serde_json::Value>,
 }
 
 /// Dọn các nhóm trùng chắc chắn đã chọn – chạy nền (luồng + kết nối DB riêng) vì có thể hàng nghìn file trên
@@ -657,9 +730,10 @@ fn start_clean_suspects(app: AppHandle, state: State<'_, AppState>) -> CmdResult
 
 /// Chạy một việc dọn ở nền (luồng + kết nối DB riêng, cùng khoá với quét), phát `clean-progress` / `clean-health`
 /// / đúng một `clean-done`; dừng bằng `cancel_clean`.
-fn spawn_clean<F>(app: AppHandle, state: State<'_, AppState>, job: F) -> CmdResult<()>
+fn spawn_clean<F, R>(app: AppHandle, state: State<'_, AppState>, job: F) -> CmdResult<()>
 where
-    F: FnOnce(&Library, &AtomicBool, &dyn Fn(Step)) -> librarian_core::Result<TrashReport> + Send + 'static,
+    F: FnOnce(&Library, &AtomicBool, &dyn Fn(Step)) -> librarian_core::Result<R> + Send + 'static,
+    R: Serialize + 'static,
 {
     if is_scanning(&state) {
         return Err("Đang quét thư viện – đợi quét xong rồi dọn".into());
@@ -704,7 +778,7 @@ where
             },
             on_stall,
         );
-        let res = (|| -> librarian_core::Result<TrashReport> {
+        let res = (|| -> librarian_core::Result<R> {
             // Cùng khoá với quét (app + tác vụ quét ngầm): không dọn khi một tiến trình khác đang quét.
             let _lock = lock::ScanLock::try_acquire(&home)?;
             let lib = Library::open(&home)?;
@@ -723,7 +797,7 @@ where
         let stall = watchdog.finish();
         let ev = match (res, stall) {
             (_, Some(stall)) => CleanDone { ok: false, message: Some(stall.to_string()), report: None },
-            (Ok(r), None) => CleanDone { ok: true, message: None, report: Some(r) },
+            (Ok(r), None) => CleanDone { ok: true, message: None, report: serde_json::to_value(r).ok() },
             (Err(librarian_core::Error::Locked), None) => CleanDone {
                 ok: false,
                 message: Some("Tác vụ quét ngầm đang chạy – thử lại sau ít phút".into()),
@@ -1608,6 +1682,11 @@ fn main() {
             tag_list,
             tag_map_plan,
             tag_map_save,
+            volumes_info,
+            add_library_folder,
+            remove_library_folder,
+            balance_preview,
+            start_balance,
             exact_groups,
             start_clean_exact,
             cancel_clean,

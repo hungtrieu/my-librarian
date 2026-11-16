@@ -344,6 +344,8 @@ pub fn scan(conn: &Connection, cfg: &Config, opts: &ScanOptions) -> Result<ScanS
     if roots.is_empty() {
         return Err(crate::Error::NoLibrary);
     }
+    // Thư mục thư viện đổi trong cấu hình (thêm / bỏ ổ): cập nhật loại thư mục gốc trong DB trước khi quét.
+    db::sync_library_roots(conn, cfg)?;
     let kind = opts.kind.unwrap_or("app");
     conn.execute(
         "INSERT INTO scan_reports(kind, started_at, status) VALUES (?1, ?2, 'running')",

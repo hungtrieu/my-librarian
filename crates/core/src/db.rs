@@ -280,11 +280,26 @@ pub fn backup(conn: &Connection, dir: &Path, keep: usize) -> Result<std::path::P
     Ok(dst)
 }
 
-pub fn ensure_root(conn: &Connection, path: &str, kind: &str) -> Result<i64> {
-    if kind == "library" {
-        // Chỉ một thư mục thư viện (D2): thư viện cũ (nếu đổi) trở thành nguồn phụ.
-        conn.execute("UPDATE roots SET kind = 'source' WHERE kind = 'library' AND path <> ?1", [path])?;
+/// Đánh dấu đúng các thư mục thư viện trong cấu hình là `library`; thư mục thư viện cũ không còn trong cấu hình trở
+/// thành nguồn phụ (sách trong đó vẫn còn, chỉ không còn là "thư viện").
+pub fn sync_library_roots(conn: &Connection, cfg: &crate::config::Config) -> Result<()> {
+    let libs: Vec<String> = cfg.library_roots().iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let mut st = conn.prepare("SELECT id, path FROM roots WHERE kind = 'library'")?;
+    let current = st
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, path) in current {
+        if !libs.iter().any(|l| crate::config::same_path(Path::new(l), Path::new(&path))) {
+            conn.execute("UPDATE roots SET kind = 'source' WHERE id = ?1", [id])?;
+        }
     }
+    for l in &libs {
+        ensure_root(conn, l, "library")?;
+    }
+    Ok(())
+}
+
+pub fn ensure_root(conn: &Connection, path: &str, kind: &str) -> Result<i64> {
     if let Some(id) = conn.query_row("SELECT id FROM roots WHERE path = ?1", [path], |r| r.get(0)).optional()? {
         conn.execute("UPDATE roots SET kind = ?2 WHERE id = ?1", params![id, kind])?;
         return Ok(id);
