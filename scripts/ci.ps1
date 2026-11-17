@@ -7,7 +7,7 @@
   Log của mỗi lần chạy: target\ci\ci-<thời gian>.log. Mã thoát 0 = xanh, khác 0 = có bước hỏng.
 
 .PARAMETER Quick
-  Chỉ format + clippy + test (dùng cho git hook pre-push).
+  Chỉ format + clippy + test.
 
 .PARAMETER NoBundle
   Bỏ bước đóng gói bộ cài (vẫn build release).

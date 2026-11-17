@@ -54,7 +54,6 @@ powershell -ExecutionPolicy Bypass -File scripts/ci.ps1
 
 Chạy lần lượt: format → clippy (`-D warnings`) → test → build release → đóng gói .msi/NSIS (nếu đã cài `tauri-cli`). Bản build lưu ở `dist/<phiên bản>-<thời gian>-<commit>/` (giữ 10 bản gần nhất), log ở `target/ci/` (`latest.log` là lần gần nhất). Tự chọn toolchain MSVC nếu có Build Tools, ngược lại GNU. Tham số: `-Quick` (chỉ format + clippy + test), `-NoBundle`, `-Toolchain msvc|gnu`.
 
-- **Chặn push khi hỏng:** `scripts/install-hooks.ps1` bật hook `.githooks/pre-push` (chạy `ci.ps1 -Quick`). Bỏ qua một lần: `git push --no-verify`.
 - **Chạy mỗi đêm:** `scripts/register-nightly.ps1 [-At 02:00]` đăng ký Task Scheduler (chạy bù nếu máy tắt đúng giờ); gỡ bằng `-Remove`.
 - **Đóng gói** cần `tauri-cli`: `cargo install tauri-cli --version "^2" --locked`.
 

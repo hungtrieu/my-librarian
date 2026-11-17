@@ -1,5 +1,0 @@
-#!/bin/sh
-# CI nhanh trước khi push (E0-02): format + clippy + test. Hỏng thì chặn push.
-# Bỏ qua khi thật cần: git push --no-verify
-echo "pre-push: chạy scripts/ci.ps1 -Quick ..."
-exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/ci.ps1 -Quick

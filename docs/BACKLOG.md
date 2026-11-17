@@ -27,7 +27,7 @@ Cột **Trạng thái**: ✅ Xong · 🟡 Lõi xong (chưa có giao diện) / M�
 | D13 | Đánh dấu / tô sáng / ghi chú: **sau v1**. |
 | D14 | Máy thử: **Windows 11** (WebView2 có sẵn, không cần cài thêm). |
 | D15 | Bỏ spike Thùng rác (S1): file ≤ 200 MB nên coi như luôn vào được Thùng rác. Giữ một bước kiểm tra rẻ ở E5-02 (xem bên dưới). |
-| D17 | **CI tại máy, không dùng GitHub Actions** (2026-11-06): `scripts/ci.ps1` chạy format → clippy (`-D warnings`) → test → build release → đóng gói .msi/NSIS, lưu bản build vào `dist/`. Git hook `pre-push` chạy bản nhanh (format + clippy + test) và chặn push nếu hỏng; tuỳ chọn chạy đầy đủ mỗi đêm bằng Task Scheduler. Không dùng GitHub Actions và không build trên macOS/Linux. |
+| D17 | **CI tại máy, không dùng GitHub Actions** (2026-11-06): `scripts/ci.ps1` chạy format → clippy (`-D warnings`) → test → build release → đóng gói .msi/NSIS, lưu bản build vào `dist/`. Bản nhanh `-Quick` (format + clippy + test) chạy tay khi cần; tuỳ chọn chạy đầy đủ mỗi đêm bằng Task Scheduler. Không dùng GitHub Actions và không build trên macOS/Linux. |
 
 **Hệ quả của D4 so với yêu cầu đầu:** "tự động cho vào thùng rác bản chắc chắn trùng" giờ là *một nút bấm hàng loạt trong app* ("Dọn N bản trùng chắc chắn"), bạn xem danh sách rồi bấm một lần. Nếu sau này muốn bật tự động hoàn toàn thì chỉ là một công tắc cấu hình (mặc định tắt) – xem story E8-05.
 
@@ -76,7 +76,7 @@ Thứ tự này đưa phần "đáng giá nhất và rủi ro nhất" (dedupe an
 | ID | Story | Tiêu chí nghiệm thu | Ưu tiên | Cỡ | Trạng thái |
 |---|---|---|---|---|---|
 | E0-01 | Dựng workspace Cargo (`core`, `scanner-cli`, `app`) + `ui` | `cargo test` và `cargo run -p librarian-app` chạy trên Windows | P0 | S | ✅ Xong |
-| E0-02 | **CI tại máy Windows** (D17): `scripts/ci.ps1` (format, clippy `-D warnings`, test, build release, đóng gói .msi/NSIS vào `dist/`, log ở `target/ci`), tự chọn toolchain MSVC/GNU; hook `pre-push` chạy `ci.ps1 -Quick`; `scripts/register-nightly.ps1` đăng ký chạy đầy đủ mỗi đêm | Push bị chặn khi test/lint hỏng; mỗi lần chạy đầy đủ có bộ cài trong `dist/` | P1 | M | ✅ Xong |
+| E0-02 | **CI tại máy Windows** (D17): `scripts/ci.ps1` (format, clippy `-D warnings`, test, build release, đóng gói .msi/NSIS vào `dist/`, log ở `target/ci`), tự chọn toolchain MSVC/GNU; `ci.ps1 -Quick` cho bản nhanh; `scripts/register-nightly.ps1` đăng ký chạy đầy đủ mỗi đêm | Lỗi test/lint làm hỏng lần chạy CI; mỗi lần chạy đầy đủ có bộ cài trong `dist/` | P1 | M | ✅ Xong |
 | E0-06 | ~~GitHub Actions `windows-latest` chạy lại `scripts/ci.ps1` trên máy sạch~~ – bỏ (2026-11-06): chỉ build trên máy Windows này | — | — | — | ⛔ Bỏ |
 | E0-03 | Logging có xoay vòng + cấu hình + migration DB | Log ở `%APPDATA%`; nâng schema không mất dữ liệu | P0 | S | ✅ Xong |
 | E0-04 | Bộ dữ liệu mẫu tự sinh (epub, mobi, azw3, cbz, cbr, pdf, fb2, djvu, bản trùng, tên Unicode, đường dẫn dài) | Script sinh bộ mẫu dùng chung cho test lõi | P0 | M | ✅ Xong |
@@ -227,7 +227,7 @@ Nguyên tắc UI/UX học theo Apple Books: giao diện tối giản, **ẩn tha
 | Ổ ngoài bị rút giữa chừng | E1-04, E8-07, thao tác từng file có journal |
 | PDF/CBZ rất lớn làm treo/RAM | Stream Range, thumbnail lười, quét chỉ đọc metadata |
 | Một số định dạng (DJVU/CBR) không đọc được trong webview | S4 + phương án dự phòng mở bằng app ngoài |
-| CI chạy trên máy cá nhân (môi trường không "sạch", chỉ chạy khi máy bật) | `ci.ps1` tự kiểm tra toolchain; hook pre-push; bản build/log lưu lại để đối chiếu |
+| CI chạy trên máy cá nhân (môi trường không "sạch", chỉ chạy khi máy bật) | `ci.ps1` tự kiểm tra toolchain và chạy test trong mỗi lần build; bản build/log lưu lại để đối chiếu |
 
 ---
 
@@ -265,7 +265,7 @@ Cập nhật 2026-11-06. Trạng thái từng story nằm ở cột **Trạng th
 
 **Đã bỏ:** E1-07 (giám sát thời gian thực – thay bằng nút “⟳ Làm mới”/F5), E0-05 (i18n – app cá nhân, chỉ tiếng Việt), E0-06 (GitHub Actions – chỉ build trên máy Windows này).
 
-**CI tại máy (E0-02, D17):** `scripts/ci.ps1` + hook `pre-push` (`git config core.hooksPath .githooks`, bật bằng `scripts/install-hooks.ps1`). Không dùng GitHub Actions. Khi đang phát triển chỉ cần `ci.ps1 -Quick` (format + clippy + test, đã chạy xanh); bản đầy đủ (build release + đóng gói .msi/NSIS) chỉ chạy khi cần bộ cài để dùng thật – **chưa chạy thử bước đóng gói** (sẽ kiểm ở M7).
+**CI tại máy (E0-02, D17):** `scripts/ci.ps1` (mỗi lần build đã chạy format + clippy + test; bỏ hook `pre-push` từ 2026-11-16). Không dùng GitHub Actions. Khi đang phát triển chỉ cần `ci.ps1 -Quick` (format + clippy + test, đã chạy xanh); bản đầy đủ (build release + đóng gói .msi/NSIS) chỉ chạy khi cần bộ cài để dùng thật – **chưa chạy thử bước đóng gói** (sẽ kiểm ở M7).
 
 **M5 (trình đọc trong app, 2026-11-07):** `ui/reader.js` + `ui/reader.css`, lõi `crates/core/src/reader.rs`, giao thức `book://` trong `crates/app`.
 - Khung kiểu Apple Books: thanh trên/dưới mờ nền, tự ẩn (chạm giữa / đưa chuột lên mép để hiện), chạm mép trái/phải lật trang, thanh trượt vị trí kèm xem trước trang, mục lục, tìm trong sách, bảng "Aa" (Trắng / Sepia / Xám / Đêm / theo Windows, cỡ chữ, phông, giãn dòng, lề, căn đều, lật trang/cuộn), F11 toàn màn hình, Esc về thư viện, Delete xoá vào Thùng rác (E7-14).

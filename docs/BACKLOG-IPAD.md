@@ -248,7 +248,7 @@ Thứ tự: I0 trước vì rủi ro lớn nhất là **build/ký iOS bằng Tau
 | Tường lửa Windows chặn; mạng Wi-Fi đặt là "Công cộng"; router bật cách ly máy khách (Wi-Fi khách) | I3-07 thêm luật tường lửa; màn iPad trên máy tính tự kiểm và hướng dẫn chuyển mạng sang Riêng tư; Q5 |
 | iOS tạm dừng app khi chuyển sang app khác / khoá màn hình → tải dở | Giữ màn hình sáng + tải tiếp bằng Range (P0); tải nền (I4-06, P2) |
 | HTTP không mã hoá trong mạng nhà | Chỉ IP nội bộ, token riêng, máy chủ tắt mặc định, chỉ đọc |
-| Thay đổi lõi (tách feature) làm hỏng bản Windows | I1-01 làm trước, `ci.ps1` + hook pre-push bắt lỗi |
+| Thay đổi lõi (tách feature) làm hỏng bản Windows | I1-01 làm trước, `ci.ps1` (test chạy trong mỗi lần build) bắt lỗi |
 
 ## 7. Ngoài phạm vi
 - Phân loại, dedupe, quét, di chuyển, Thùng rác trên iPad.
