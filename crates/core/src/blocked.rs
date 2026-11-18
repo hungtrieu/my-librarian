@@ -228,8 +228,13 @@ pub fn folder_tree(conn: &Connection, cfg: &Config, max_depth: usize) -> Result<
             *counts.entry(keys[..d].to_vec()).or_default() += 1;
         }
     }
+    // Làm phẳng thư mục con: chỉ hiện thư mục con do app quản lý (thư mục lạ sắp bị dọn khi quét).
+    let managed = cfg.flatten_subfolders.then(|| crate::subcats::SubCats::new(cfg));
     for (rel, name) in &found {
         let keys: Vec<String> = rel.iter().map(|c| name_key(c)).collect();
+        if managed.as_ref().is_some_and(|m| !m.contains(&keys)) && !blocked.covers(&keys) {
+            continue;
+        }
         out.push(FolderNode {
             rel: rel.join("/"),
             name: name.clone(),

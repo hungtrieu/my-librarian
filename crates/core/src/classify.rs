@@ -59,6 +59,8 @@ pub fn list_categories(cfg: &Config) -> Result<Vec<Category>> {
                 .into_iter()
                 // thư mục chia nhỏ `Khác` (`A`…`Z`, `0-9`, `#`) không phải thư mục bộ
                 .filter(|(n, _)| !(crate::triage::is_other_dir(&name) && crate::triage::is_other_bucket(n)))
+                // Làm phẳng thư mục con: chỉ thư mục con do app quản lý (thư mục lạ sắp bị dọn).
+                .filter(|(n, _)| !cfg.flatten_subfolders || cfg.is_subcategory(&[name.clone(), n.clone()]))
                 .map(|(n, p)| SeriesDir { key: normalize_title(&n), name: n, path: p })
                 .filter(|s| s.key.chars().count() >= 2)
                 .collect();
@@ -153,7 +155,29 @@ pub struct Model {
 impl Model {
     /// Dựng hồ sơ từ sách đã nằm trong các thư mục thể loại (kể cả sách bạn đã phân loại tay – E6-08).
     pub fn build(conn: &rusqlite::Connection, cfg: &Config) -> Result<Model> {
-        let categories = list_categories(cfg)?;
+        Self::build_inner(conn, cfg, false, None)
+    }
+
+    /// Như [`Model::build`] nhưng không có thể loại `Khác` (để đoán thể loại cho chính sách trong `Khác`), và tác giả
+    /// của sách không có metadata được đoán từ tên file (`known`: tác giả đã biết, xem `similar.rs`).
+    pub fn build_excluding_other(
+        conn: &rusqlite::Connection,
+        cfg: &Config,
+        known: &std::collections::HashSet<String>,
+    ) -> Result<Model> {
+        Self::build_inner(conn, cfg, true, Some(known))
+    }
+
+    fn build_inner(
+        conn: &rusqlite::Connection,
+        cfg: &Config,
+        exclude_other: bool,
+        known: Option<&std::collections::HashSet<String>>,
+    ) -> Result<Model> {
+        let mut categories = list_categories(cfg)?;
+        if exclude_other {
+            categories.retain(|c| !crate::triage::is_other_dir(&c.name));
+        }
         let by_key: HashMap<&str, usize> = categories.iter().enumerate().map(|(i, c)| (c.key.as_str(), i)).collect();
         let lib = crate::dedupe::library_root_ids(conn)?;
         let books = db::books_where(conn, "status = 'present' AND category IS NOT NULL AND in_inbox = 0", [])?;
@@ -192,8 +216,12 @@ impl Model {
         for (c, b, v) in &docs {
             let u = model.weigh(v.clone());
             add(&mut model.sums[*c], &u, 1.0);
-            if !b.norm_author.is_empty() {
-                *model.authors[*c].entry(b.norm_author.clone()).or_default() += 1;
+            let author = match known {
+                Some(k) => crate::similar::author_key(b, k),
+                None => (!b.norm_author.is_empty()).then(|| b.norm_author.clone()),
+            };
+            if let Some(a) = author {
+                *model.authors[*c].entry(a).or_default() += 1;
             }
         }
         for (i, s) in model.sums.iter().enumerate() {
@@ -245,6 +273,15 @@ impl Model {
 
     /// Dự đoán thư mục cho một cuốn. `exclude_own`: bỏ đóng góp của chính cuốn này (đánh giá leave-one-out).
     pub fn predict(&self, b: &Book, exclude_own: Option<usize>) -> Prediction {
+        self.predict_inner(b, &b.norm_author, exclude_own)
+    }
+
+    /// Như [`Model::predict`] với tác giả cho sẵn (vd. đoán từ tên file khi sách không có metadata).
+    pub fn predict_with_author(&self, b: &Book, author: Option<&str>) -> Prediction {
+        self.predict_inner(b, author.unwrap_or(&b.norm_author), None)
+    }
+
+    fn predict_inner(&self, b: &Book, author: &str, exclude_own: Option<usize>) -> Prediction {
         let none = |reason: &str| Prediction { category: None, series_dir: None, confidence: 0, reason: reason.into() };
         if self.categories.is_empty() {
             return none("Thư viện chưa có thư mục thể loại nào");
@@ -253,10 +290,10 @@ impl Model {
 
         // 1) Tác giả đã có sách ở một mục.
         let mut author_pick: Option<(usize, u32, f64)> = None;
-        if !b.norm_author.is_empty() {
+        if !author.is_empty() {
             let counts: Vec<u32> = (0..self.categories.len())
                 .map(|c| {
-                    let n = self.authors[c].get(&b.norm_author).copied().unwrap_or(0);
+                    let n = self.authors[c].get(author).copied().unwrap_or(0);
                     if exclude_own == Some(c) {
                         n.saturating_sub(1)
                     } else {
@@ -403,7 +440,22 @@ pub fn propose(conn: &rusqlite::Connection, cfg: &Config) -> Result<Vec<Proposal
             });
             continue;
         }
-        if is_comic_archive(&b) {
+        if is_comic_archive(&b) && cfg.flatten_subfolders {
+            // Không chia thư mục theo bộ (làm phẳng thư mục con): truyện vào thẳng thư mục truyện tranh.
+            if let Some(c) = comic_cat {
+                out.push(Proposal {
+                    target: Some(c.path.clone()),
+                    target_label: Some(c.name.clone()),
+                    confidence: 85,
+                    bucket: bucket_of(85),
+                    preselected: 85 >= cfg.classify_high,
+                    reason: "Truyện tranh (CBZ / CBR)".into(),
+                    suggestion: None,
+                    book: b,
+                });
+                continue;
+            }
+        } else if is_comic_archive(&b) {
             // Truyện chưa có thư mục bộ → không tự tạo thư mục, đưa vào "Cần phân loại tay" kèm gợi ý (E6-10).
             let series = b.series.clone().unwrap_or_else(|| series_from_name(b.stem()));
             let suggestion = Some(match comic_cat {

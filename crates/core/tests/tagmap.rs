@@ -43,6 +43,8 @@ fn setup() -> Env {
     std::fs::create_dir_all(books.join("Tiểu thuyết").join("Nước ngoài")).unwrap();
     let mut lib = Library::open(&tmp.path().join("home")).unwrap();
     lib.set_library_root(&books).unwrap();
+    // Hành vi cũ: thư mục bộ (`Harry Potter`) đi theo sách. Chế độ làm phẳng: xem tests/subcats.rs.
+    lib.config.flatten_subfolders = false;
     let e = Env { _tmp: tmp, books, lib };
     analyze(&e);
     e

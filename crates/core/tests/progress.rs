@@ -100,7 +100,7 @@ fn every_phase_is_reported_and_stalls_are_caught() {
         phases.borrow_mut().insert(s.phase);
         wd.observe(s);
     };
-    // auto_clean = None: thùng rác chậm chỉ dùng cho bước phân loại (tham số `trasher` của triage)
+    // trasher = None: thùng rác chậm chỉ dùng cho bước phân loại (tham số `trasher` của triage)
     let triage = librarian_core::triage::run(
         &lib.config,
         &slow,

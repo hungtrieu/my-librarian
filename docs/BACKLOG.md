@@ -175,14 +175,17 @@ Nguyên tắc UI/UX học theo Apple Books: giao diện tối giản, **ẩn tha
 | E7-14 | Xoá sách đang đọc ngay trong trình đọc (E5-03) | Xoá xong quay lại thư viện | P0 | S | ✅ Xong |
 
 ### E8 – Quét ngầm hằng ngày (M6) — *yêu cầu D4*
+
+> **Đã bỏ quét ngầm (2026-11-18):** máy người dùng không bật suốt đêm, và app đã quét + phân tích mỗi lần mở / bấm Quét. Gỡ `librarian-bg.exe`, giờ quét và công tắc tự dọn trùng khi quét ngầm (E8-01, E8-05). Giữ khoá chống quét chồng (app ↔ CLI), báo cáo, xử lý ổ chưa cắm.
+
 | ID | Story | Tiêu chí nghiệm thu | Ưu tiên | Cỡ | Trạng thái |
 |---|---|---|---|---|---|
-| E8-01 | `scanner-cli.exe`: quét + dedupe + phân loại đề xuất, **chế độ chỉ đọc** với sách (không xoá, không di chuyển) và chỉ ghi vào DB/log | Chạy xong không file sách nào thay đổi (test so sánh cây thư mục) | P0 | M | ✅ Xong |
-| E8-02 | Cài/gỡ lịch trong Task Scheduler từ Cài đặt (tên tác vụ `My Librarian - Quet ngam` – bộ cài NSIS đã gỡ tác vụ này khi gỡ app): giờ chạy, chạy ẩn, ưu tiên thấp, **chạy bù nếu lỡ giờ**, chỉ chạy khi ổ sách đã cắm | Máy tắt lúc 3h → bật lên chạy bù; không cửa sổ nhấp nháy | P0 | M | ⬜ |
+| E8-01 | `scanner-cli.exe`: quét + dedupe + phân loại đề xuất, **chế độ chỉ đọc** với sách (không xoá, không di chuyển) và chỉ ghi vào DB/log | Chạy xong không file sách nào thay đổi (test so sánh cây thư mục) | P0 | M | ❌ Bỏ |
+| E8-02 | Cài/gỡ lịch trong Task Scheduler từ Cài đặt (tên tác vụ `My Librarian - Quet ngam` – bộ cài NSIS đã gỡ tác vụ này khi gỡ app): giờ chạy, chạy ẩn, ưu tiên thấp, **chạy bù nếu lỡ giờ**, chỉ chạy khi ổ sách đã cắm | Máy tắt lúc 3h → bật lên chạy bù; không cửa sổ nhấp nháy | P0 | M | ❌ Bỏ |
 | E8-03 | Khoá chống quét chồng (app đang quét thì tác vụ ngầm thoát êm, và ngược lại); DB WAL cho phép app đọc khi quét | Chạy đồng thời không lỗi, không hỏng DB | P0 | M | ✅ Xong |
 | E8-04 | Kết quả mỗi lần quét lưu thành "báo cáo": trùng chắc chắn mới, nghi trùng mới, sách mới cần phân loại, sách mất, lỗi đọc file | Lịch sử báo cáo xem lại được | P0 | M | ✅ Xong |
-| E8-05 | Công tắc "tự động dọn trùng chắc chắn khi quét ngầm" – **mặc định TẮT**, có cảnh báo; chỉ khi bạn tự bật | Mặc định không bao giờ tự xoá | P2 | S | ✅ Xong |
-| E8-06 | Hiển thị trạng thái lịch: lần chạy gần nhất, kết quả, lần kế tiếp | Hiện trong Cài đặt | P1 | S | ⬜ |
+| E8-05 | Công tắc "tự động dọn trùng chắc chắn khi quét ngầm" – **mặc định TẮT**, có cảnh báo; chỉ khi bạn tự bật | Mặc định không bao giờ tự xoá | P2 | S | ❌ Bỏ |
+| E8-06 | Hiển thị trạng thái lịch: lần chạy gần nhất, kết quả, lần kế tiếp | Hiện trong Cài đặt | P1 | S | ❌ Bỏ |
 | E8-07 | Nếu ổ ngoài chưa cắm: ghi "bỏ qua – ổ chưa kết nối", không báo lỗi giả | Có trong báo cáo | P0 | S | ✅ Xong |
 
 ### E9 – Thông báo trong app & cài đặt (M6) — *yêu cầu D5*
@@ -253,7 +256,7 @@ Duyệt → làm **M0 (spikes S2–S6)**. Mình viết mã thử để bạn ch�
 
 Cập nhật 2026-11-06. Trạng thái từng story nằm ở cột **Trạng thái** trong các bảng mục 4.
 
-**M1–M3 (lõi + CLI):** `crates/core` + `librarian.exe` / `librarian-bg.exe` (quét ngầm chỉ đọc).
+**M1–M3 (lõi + CLI):** `crates/core` + `librarian.exe`.
 
 **M4 (giao diện thư viện kiểu Apple Books):** `crates/app` (Tauri 2) + `ui/` (HTML/CSS/JS thuần, không cần build).
 - Lưới bìa sách ảo hoá, ô bộ truyện chồng bìa ("N vol", "Đọc tiếp"), mục Đang đọc / Bộ truyện / hộp thư đến / từng thể loại.
@@ -280,7 +283,7 @@ Cập nhật 2026-11-06. Trạng thái từng story nằm ở cột **Trạng th
 
 **Kiểm thử:** 49 test tự động (24 unit lõi, 18 tích hợp, 5 tích hợp trình đọc, 1 tích hợp "không đọc được" dùng file RAR mẫu `crates/core/tests/fixtures/rar-comic.cbr`, 1 test HTTP Range ở app) + 1 test Thùng rác Windows thật (`--ignored`). clippy `-D warnings` sạch. Trình đọc đã thử trên trình duyệt với file mẫu: mở đủ EPUB/MOBI/AZW3/FB2/CBZ/PDF/TXT, mục lục, tìm, lưu/khôi phục vị trí, trang đôi, manga, chuyển vol, thẻ hết sách. **Chưa thử trên app Tauri thật (WebView2)** và chưa kiểm bằng mắt các phần cần vẽ: hoạt ảnh lật trang, canvas PDF, cuộn dọc webtoon (khung xem trước bị ẩn khi thử).
 **M7 (đóng gói, chất lượng, hiệu năng – 2026-11-07):**
-- **Bộ cài (E10-01):** `scripts\ci.ps1` tạo `.msi` (WiX) và `-setup.exe` (NSIS, giao diện tiếng Việt, cài cho riêng tài khoản) trong `dist\`. Bộ cài kèm `librarian.exe`, `librarian-bg.exe` (cấu hình riêng cho lúc đóng gói: `crates/app/tauri.bundle.conf.json`, để build thường không đòi file release). Đăng ký "Mở bằng My Librarian" cho `.epub .mobi .azw .azw3 .fb2 .cbz .cbr .pdf .djvu`; bấm đúp file khi app đang mở thì chuyển vào cửa sổ đang chạy (single-instance); file nằm ngoài thư viện vẫn đọc được, không ghi vào DB. Gỡ bằng NSIS: tick "Delete the application data" thì xoá `%APPDATA%\my-librarian` (hook `crates/app/installer-hooks.nsh`), đồng thời gỡ tác vụ quét ngầm nếu có; sách không bị đụng tới. Bộ cài MSI không có lựa chọn xoá dữ liệu. Chuỗi trong MSI phải không dấu (WiX dùng bảng mã 1252).
+- **Bộ cài (E10-01):** `scripts\ci.ps1` tạo `.msi` (WiX) và `-setup.exe` (NSIS, giao diện tiếng Việt, cài cho riêng tài khoản) trong `dist\`. Bộ cài kèm `librarian.exe` (cấu hình riêng cho lúc đóng gói: `crates/app/tauri.bundle.conf.json`, để build thường không đòi file release). Đăng ký "Mở bằng My Librarian" cho `.epub .mobi .azw .azw3 .fb2 .cbz .cbr .pdf .djvu`; bấm đúp file khi app đang mở thì chuyển vào cửa sổ đang chạy (single-instance); file nằm ngoài thư viện vẫn đọc được, không ghi vào DB. Gỡ bằng NSIS: tick "Delete the application data" thì xoá `%APPDATA%\my-librarian` (hook `crates/app/installer-hooks.nsh`); sách không bị đụng tới. Bộ cài MSI không có lựa chọn xoá dữ liệu. Chuỗi trong MSI phải không dấu (WiX dùng bảng mã 1252).
 - **Không đọc được (E10-04):** mục riêng ở thanh bên liệt kê sách có lỗi đọc lúc quét hoặc có DRM, kèm lý do; trình đọc gặp file hỏng thì báo lỗi kèm nút mở bằng app khác.
 - **Sao lưu DB (E10-06):** app và tác vụ ngầm sao lưu mỗi ngày (`VACUUM INTO`, giữ 7 bản ở `backups\`). Khi mở mà `library.db` hỏng: cất file hỏng thành `library.db.corrupt-<thời gian>`, khôi phục từ bản sao lưu mới nhất còn dùng được (không có thì tạo DB mới) và báo một lần trong app.
 - **Hiệu năng (E10-03):** `librarian bench --books 50000` đo trên kho tổng hợp; kết quả và ngưỡng ở [PERF.md](PERF.md). 50k sách: quét lại 0,6 s, tìm 3,6 ms, lưới sắp theo tên 237 ms (đã tối ưu từ 670 ms). Chưa đo kho thật / RAM khi mở PDF lớn.
@@ -288,6 +291,6 @@ Cập nhật 2026-11-06. Trạng thái từng story nằm ở cột **Trạng th
 
 **Kiểm thử (đến M4):** 36 test tự động (18 unit, 18 tích hợp) + 1 test Thùng rác Windows thật (`--ignored`). Giao diện đã thử trên app thật (Windows 11, WebView2) với thư viện mẫu và trên trình duyệt với dữ liệu giả (`node scripts/serve-ui.mjs`).
 
-**Chưa làm:** phần còn lại của M5 (DJVU trong app – E7-11, tô sáng kết quả tìm trong PDF, chế độ chống mỏi mắt + bảng phím tắt – E7-12, công tắc tắt hoạt ảnh riêng – E7-13; đo RAM/thời gian mở PDF 300–500 MB – S2/E10-03; ghi chú/tô sáng để sau v1 – E7-07), đăng ký Task Scheduler (E8-02, E8-06), trang Tổng quan (E9-02), bìa PDF/DJVU (E2-08), kéo-thả phân loại (E6-08), lọc theo tác giả trên giao diện (đã có ở lõi), chạy thử trên kho thật + đo RAM app thật (M7, xem TRIAL.md), spikes S3, S5, S6 (S4 đã có câu trả lời: CBR → `unrar`, DJVU → app ngoài).
+**Chưa làm:** phần còn lại của M5 (DJVU trong app – E7-11, tô sáng kết quả tìm trong PDF, chế độ chống mỏi mắt + bảng phím tắt – E7-12, công tắc tắt hoạt ảnh riêng – E7-13; đo RAM/thời gian mở PDF 300–500 MB – S2/E10-03; ghi chú/tô sáng để sau v1 – E7-07), trang Tổng quan (E9-02), bìa PDF/DJVU (E2-08), kéo-thả phân loại (E6-08), lọc theo tác giả trên giao diện (đã có ở lõi), chạy thử trên kho thật + đo RAM app thật (M7, xem TRIAL.md), spikes S3, S5 (S6 bỏ cùng quét ngầm; S4 đã có câu trả lời: CBR → `unrar`, DJVU → app ngoài).
 
 **Giới hạn đã biết:** PDF dùng xref stream nén hoặc Info nằm trong object stream thì không lấy được tiêu đề (dùng tên file). CBR dạng RAR chỉ lấy bìa + số trang (không đọc ComicInfo). Build bằng toolchain GNU có cảnh báo linker "multiple non-default manifests" (không gặp với MSVC). Một nhóm nghi trùng có thể chứa cả bản trùng chắc chắn của cùng cuốn; nên dọn ở màn Trùng chắc chắn trước.

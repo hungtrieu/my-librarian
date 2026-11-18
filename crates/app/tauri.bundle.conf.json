@@ -4,8 +4,7 @@
   },
   "bundle": {
     "resources": {
-      "../../target/release/librarian.exe": "librarian.exe",
-      "../../target/release/librarian-bg.exe": "librarian-bg.exe"
+      "../../target/release/librarian.exe": "librarian.exe"
     }
   }
 }

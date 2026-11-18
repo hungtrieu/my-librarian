@@ -92,12 +92,12 @@ fn rename_create_and_delete_folders_on_every_drive() {
     assert_eq!(e.lib.config.tag_map[0].target, "Văn chương/Nguyễn Nhật Ánh");
 
     // Thêm thể loại / thư mục con.
-    assert_eq!(folders::create(&e.lib.config, None, "Thơ").unwrap(), "Thơ");
+    assert_eq!(folders::create(&mut e.lib.config, None, "Thơ").unwrap(), "Thơ");
     assert!(e.d.join("Thơ").is_dir());
-    assert_eq!(folders::create(&e.lib.config, Some("van chuong"), "Mới").unwrap(), "Văn chương/Mới");
+    assert_eq!(folders::create(&mut e.lib.config, Some("van chuong"), "Mới").unwrap(), "Văn chương/Mới");
     assert!(e.d.join("Văn chương").join("Mới").is_dir());
-    assert!(folders::create(&e.lib.config, None, "tho").is_err(), "trùng tên");
-    assert!(folders::create(&e.lib.config, Some("Khác"), "x").is_err());
+    assert!(folders::create(&mut e.lib.config, None, "tho").is_err(), "trùng tên");
+    assert!(folders::create(&mut e.lib.config, Some("Khác"), "x").is_err());
 
     // Xoá thư mục con: sách lên thư mục cha.
     let r = folders::delete(&e.lib.conn, &e.lib.config, &NoTrash, "Văn chương/Nguyễn Nhật Ánh", None, None).unwrap();

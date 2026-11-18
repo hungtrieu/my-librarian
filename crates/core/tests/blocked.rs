@@ -61,6 +61,8 @@ fn setup() -> Env {
     std::fs::create_dir_all(&trash.dir).unwrap();
     let mut lib = Library::open(&tmp.path().join("home")).unwrap();
     lib.set_library_root(&books).unwrap();
+    // Hai thư mục con tạo bằng app (thư mục con lạ thì bị làm phẳng khi quét).
+    lib.config.subcategories = vec![format!("{PARENT}/Đam mỹ"), format!("{PARENT}/Ngôn tình")];
     let e = Env { _tmp: tmp, books, lib, trash };
     analyze(&e);
     e

@@ -39,8 +39,6 @@ enum Cmd {
     Config {
         #[arg(long)]
         read_only: Option<bool>,
-        #[arg(long)]
-        auto_clean: Option<bool>,
         /// Tự phân loại hộp thư đến mỗi lần quét (xem `triage`).
         #[arg(long)]
         auto_triage: Option<bool>,
@@ -188,14 +186,10 @@ fn run(cli: Cli, home: PathBuf) -> Result<()> {
             println!("Thư viện: {}", books.display());
             println!("Hộp thư đến: {}", lib.config.inbox_dir().unwrap().display());
         }
-        Cmd::Config { read_only, auto_clean, auto_triage, threads, inbox, add_source, high, medium } => {
+        Cmd::Config { read_only, auto_triage, threads, inbox, add_source, high, medium } => {
             let mut changed = false;
             if let Some(v) = read_only {
                 lib.config.read_only = v;
-                changed = true;
-            }
-            if let Some(v) = auto_clean {
-                lib.config.auto_clean_exact_in_background = v;
                 changed = true;
             }
             if let Some(v) = auto_triage {

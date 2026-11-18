@@ -148,7 +148,7 @@ if (-not $Quick) {
     # Lưu bản build: dist\<phiên bản>-<thời gian>-<commit>\
     $out = Join-Path $root "dist\$Version-$stamp-$sha"
     New-Item -ItemType Directory -Force $out | Out-Null
-    foreach ($exe in 'my-librarian.exe', 'librarian.exe', 'librarian-bg.exe') {
+    foreach ($exe in 'my-librarian.exe', 'librarian.exe') {
         $p = Join-Path $root "target\release\$exe"
         if (Test-Path $p) { Copy-Item $p $out }
     }

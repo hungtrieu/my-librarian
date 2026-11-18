@@ -27,6 +27,8 @@ pub struct Query {
     pub q: Option<String>,
     /// Tên thư mục thể loại (so khớp bỏ dấu). `""` = sách nằm ngay ở gốc `books`.
     pub category: Option<String>,
+    /// Thư mục con của thể loại (`A/B`, so khớp bỏ dấu từng cấp): chỉ sách nằm trong thư mục đó (kể cả thư mục con).
+    pub folder: Option<String>,
     pub format: Option<String>,
     /// Lọc theo tác giả (chuỗi đã chuẩn hoá `norm_author` hoặc tên hiển thị).
     pub author: Option<String>,
@@ -220,12 +222,22 @@ pub fn query(conn: &Connection, q: &Query) -> Result<Page> {
     let rows = st.query_map(params_from_iter(args.iter()), card)?.collect::<rusqlite::Result<Vec<_>>>()?;
     let cat_key = q.category.as_deref().map(fold);
     let author_key = q.author.as_deref().map(crate::normalize::normalize_author);
+    let folder_keys: Option<Vec<String>> = q.folder.as_deref().map(|f| {
+        f.split(['/', '\\']).filter(|c| !c.trim().is_empty()).map(crate::normalize::simple_key).collect()
+    });
     let mut books: Vec<BookCard> = rows
         .into_iter()
         .filter(|(b, _)| match &cat_key {
             None => true,
             Some(k) if k.is_empty() => b.category.is_none(),
             Some(k) => b.category.as_deref().map(fold).as_deref() == Some(k.as_str()),
+        })
+        .filter(|(b, _)| {
+            folder_keys.as_ref().is_none_or(|want| {
+                let parts: Vec<String> =
+                    b.rel_path.split(['/', '\\']).filter(|c| !c.is_empty()).map(crate::normalize::simple_key).collect();
+                parts.len() > want.len() && parts[..want.len()] == want[..]
+            })
         })
         .filter(|(_, na)| author_key.as_ref().is_none_or(|k| na == k || (!k.is_empty() && na.contains(k.as_str()))))
         .map(|(b, _)| b)

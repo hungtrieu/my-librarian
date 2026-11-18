@@ -364,7 +364,7 @@ pub fn apply_balance(
     if reqs.is_empty() {
         return Ok(Default::default());
     }
-    let opts = crate::moves::MoveOptions { exact: true, cancel, progress: on };
+    let opts = crate::moves::MoveOptions { exact: true, cancel, progress: on, names: None };
     let rep = crate::moves::apply_moves_with(conn, cfg, &reqs, BALANCE_KIND, &opts)?;
     crate::moves::prune_empty_dirs(cfg, &rep.moved, &|_| false);
     Ok(rep)

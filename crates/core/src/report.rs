@@ -1,6 +1,6 @@
-//! Chuỗi phân tích đầy đủ + báo cáo mỗi lần quét (E8-01, E8-04, E8-05, E8-07, E9-01).
-//! Tác vụ ngầm CHỈ lập danh sách (D4): không xoá, không di chuyển – trừ khi bật E8-05 (tự dọn trùng) hoặc
-//! `auto_triage` (tự phân loại hộp thư đến, mặc định bật, tắt được trong Cài đặt).
+//! Chuỗi phân tích đầy đủ + báo cáo mỗi lần quét (E8-04, E8-07, E9-01).
+//! Phân tích chỉ lập danh sách (D4): không xoá, không di chuyển – trừ khi bật `auto_triage` (tự phân loại hộp thư
+//! đến, mặc định bật, tắt được trong Cài đặt) và các bước tự dọn đi kèm.
 
 use crate::config::Config;
 use crate::error::Result;
@@ -9,7 +9,6 @@ use crate::trash::Trasher;
 use crate::{classify, dedupe, hash, scan, OnStep, Step};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -25,7 +24,6 @@ pub struct ReportStats {
     pub inbox_proposed: usize,
     pub missing_books: i64,
     pub hash_errors: usize,
-    pub auto_cleaned: Option<usize>,
     /// Số file sách đã tự phân loại từ hộp thư đến ở đầu lần quét (khi bật `auto_triage`).
     #[serde(default)]
     pub auto_triaged: Option<usize>,
@@ -36,6 +34,9 @@ pub struct ReportStats {
     /// Số file sách thuộc thể loại bị chặn đã tự đưa vào Thùng rác (từ hộp thư đến + thư mục bị chặn còn trên đĩa).
     #[serde(default)]
     pub auto_blocked: Option<usize>,
+    /// Số file sách đã đưa ra khỏi thư mục con không do app quản lý (khi bật `flatten_subfolders`).
+    #[serde(default)]
+    pub auto_flattened: Option<usize>,
 }
 
 /// Quét + băm + phát hiện trùng + đếm sách chờ phân loại. Lưu kết quả vào `scan_reports`.
@@ -44,9 +45,9 @@ pub fn run_analysis(
     cfg: &Config,
     kind: &str,
     cancel: Option<&AtomicBool>,
-    auto_clean: Option<&dyn Trasher>,
+    trasher: Option<&dyn Trasher>,
 ) -> Result<ReportStats> {
-    run_analysis_with(conn, cfg, kind, cancel, auto_clean, None)
+    run_analysis_with(conn, cfg, kind, cancel, trasher, None)
 }
 
 /// Như [`run_analysis`], báo tiến trình từng bước qua `on`. Mỗi bước lưu kết quả ngay theo từng sách/lô, nên
@@ -56,7 +57,7 @@ pub fn run_analysis_with(
     cfg: &Config,
     kind: &str,
     cancel: Option<&AtomicBool>,
-    auto_clean: Option<&dyn Trasher>,
+    trasher: Option<&dyn Trasher>,
     on: Option<OnStep>,
 ) -> Result<ReportStats> {
     let is_cancelled = || cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
@@ -67,7 +68,7 @@ pub fn run_analysis_with(
         let journal = crate::config::default_home().join("triage-journal.jsonl");
         match crate::triage::run(
             cfg,
-            auto_clean.unwrap_or(&crate::trash::SystemTrasher),
+            trasher.unwrap_or(&crate::trash::SystemTrasher),
             &crate::triage::TriageOptions {
                 dry_run: false,
                 journal: Some(&journal),
@@ -135,7 +136,7 @@ pub fn run_analysis_with(
     // Thư mục bị chặn còn sách trên đĩa (lần chặn trước dừng giữa chừng, hoặc thư mục được tạo lại bằng tay): dọn tiếp.
     if !summary.cancelled && !cfg.read_only && !cfg.blocked_categories.is_empty() {
         let r =
-            crate::blocked::enforce(conn, cfg, auto_clean.unwrap_or(&crate::trash::SystemTrasher), None, cancel, on)?;
+            crate::blocked::enforce(conn, cfg, trasher.unwrap_or(&crate::trash::SystemTrasher), None, cancel, on)?;
         if r.trashed > 0 || !r.failures.is_empty() {
             tracing::info!("thể loại bị chặn: {} sách vào Thùng rác, {} lỗi", r.trashed, r.failures.len());
         }
@@ -149,6 +150,29 @@ pub fn run_analysis_with(
     }
     if auto_blocked > 0 || !cfg.blocked_categories.is_empty() {
         st.auto_blocked = Some(auto_blocked);
+    }
+    // Thư mục con chép theo từ nguồn (không do app tạo): đưa sách ra thư mục thể loại, dọn thư mục đã hết sách.
+    if !st.scan.cancelled && cfg.auto_triage && cfg.flatten_subfolders && !cfg.read_only && !is_cancelled() {
+        match crate::subcats::flatten(conn, cfg, trasher.unwrap_or(&crate::trash::SystemTrasher), cancel, on) {
+            Ok(r) => {
+                if r.moved > 0 || r.dirs_trashed > 0 || !r.failures.is_empty() {
+                    tracing::info!(
+                        "làm phẳng thư mục con: {} file ra thư mục thể loại, {} thư mục vào Thùng rác, {} lỗi",
+                        r.moved,
+                        r.dirs_trashed,
+                        r.failures.len()
+                    );
+                }
+                for f in r.failures.iter().take(50) {
+                    tracing::warn!("làm phẳng thư mục con: {f}");
+                }
+                st.auto_flattened = Some(r.moved);
+                if r.cancelled {
+                    st.scan.cancelled = true;
+                }
+            }
+            Err(e) => tracing::warn!("làm phẳng thư mục con lỗi: {e}"),
+        }
     }
     // Sách mới xuất hiện ở chỗ khác trong thư viện (chép thẳng vào một thư mục thể loại, hoặc tự phân loại chưa
     // biết tag vì không có metadata.opf): xếp theo ánh xạ tag → thể loại của người dùng.
@@ -172,7 +196,7 @@ pub fn run_analysis_with(
     // Sách đã xoá trước đây mà lại được tải về (nội dung y hệt): đưa thẳng vào Thùng rác, trước khi băm / tìm trùng.
     if !st.scan.cancelled && cfg.auto_reject_deleted && !cfg.read_only {
         let r =
-            crate::deleted::reject_known(conn, cfg, auto_clean.unwrap_or(&crate::trash::SystemTrasher), cancel, on)?;
+            crate::deleted::reject_known(conn, cfg, trasher.unwrap_or(&crate::trash::SystemTrasher), cancel, on)?;
         if r.trash.trashed > 0 || !r.trash.failures.is_empty() {
             tracing::info!(
                 "loại sách đã xoá trước đây: {} vào Thùng rác, {} lỗi",
@@ -210,12 +234,6 @@ pub fn run_analysis_with(
         st.exact_groups = groups.len();
         st.exact_files = groups.iter().map(|g| g.others.len()).sum();
         st.reclaimable_bytes = groups.iter().map(|g| g.reclaimable).sum();
-        if let Some(t) = auto_clean {
-            if cfg.auto_clean_exact_in_background && !cfg.read_only && !groups.is_empty() {
-                let rep = dedupe::clean_exact(conn, cfg, t, &groups, &HashMap::new())?;
-                st.auto_cleaned = Some(rep.trashed);
-            }
-        }
         step(2);
         // Có thể phải băm bổ sung nhiều file: bước con riêng có x / y (`suspect_hash`), huỷ được, lưu theo lô.
         match dedupe::suspect_groups_with(conn, cfg.hash_threads, cancel, on)? {
@@ -265,6 +283,38 @@ pub fn refresh_counts(conn: &Connection, cfg: &Config) -> Result<()> {
     }
     conn.execute("UPDATE scan_reports SET stats = ?2 WHERE id = ?1", params![rep.id, serde_json::to_string(&st)?])?;
     Ok(())
+}
+
+/// Sau một lô di chuyển: chuyển chỗ không đổi nội dung file, nên số trùng / nghi trùng giữ nguyên – chỉ số "chờ phân
+/// loại" có thể đổi, và chỉ khi lô có sách ra / vào hộp thư đến. Rẻ hơn hẳn [`refresh_counts`] (với thư viện vài
+/// chục nghìn cuốn, tính lại nghi trùng + đề xuất mất hàng trăm ms tới vài giây sau mỗi lần kéo thả).
+pub fn refresh_after_moves(conn: &Connection, cfg: &Config, moved: &[crate::moves::MoveDone]) -> Result<()> {
+    let inboxes: Vec<std::path::PathBuf> =
+        cfg.library_roots().into_iter().map(|r| r.join(&cfg.inbox_name)).collect();
+    let touches = |p: &str| {
+        let f = crate::normalize::fold(p);
+        inboxes.iter().any(|i| f.starts_with(&crate::normalize::fold(&i.to_string_lossy())))
+    };
+    if !moved.iter().any(|m| touches(&m.from) || touches(&m.to)) {
+        return Ok(());
+    }
+    refresh_inbox_counts(conn, cfg)
+}
+
+/// Chỉ tính lại số sách chờ phân loại (hộp thư đến) trong báo cáo gần nhất.
+pub fn refresh_inbox_counts(conn: &Connection, cfg: &Config) -> Result<()> {
+    if !cfg.library_online() {
+        return Ok(());
+    }
+    let props = classify::propose(conn, cfg)?;
+    let (n, p) = (props.len(), props.iter().filter(|p| p.target.is_some()).count());
+    update_stats(conn, |st| {
+        let changed = st.inbox_books != n || st.inbox_proposed != p;
+        st.inbox_books = n;
+        st.inbox_proposed = p;
+        changed
+    })
+    .map(|_| ())
 }
 
 /// Màn "Trùng chắc chắn" vừa tính danh sách nhóm: ghi số đó vào báo cáo nếu khác (không tính lại phần khác).
@@ -336,7 +386,7 @@ pub fn history(conn: &Connection, limit: usize) -> Result<Vec<Report>> {
     Ok(v)
 }
 
-/// Dòng banner khi mở app (E9-01), vd. "Từ lần quét ngầm 03:00: 12 nghi trùng, 4 trùng chắc chắn, 9 sách mới chờ phân loại".
+/// Dòng banner khi mở app (E9-01), vd. "Từ lần quét gần nhất: 12 nghi trùng, 4 trùng chắc chắn, 9 sách mới chờ phân loại".
 pub fn banner(r: &Report) -> Option<String> {
     let s = r.stats.as_ref()?;
     let mut parts = Vec::new();
@@ -359,6 +409,7 @@ pub fn banner(r: &Report) -> Option<String> {
         parts.push(format!("{n} sách thuộc thể loại bị chặn – đã tự đưa vào Thùng rác"));
     }
     let mut out = String::new();
+    // Báo cáo cũ có thể là "background" (tác vụ quét ngầm, nay đã bỏ).
     let label = if r.kind == "background" { "lần quét ngầm" } else { "lần quét" };
     if !s.scan.skipped_roots.is_empty() {
         out.push_str(&format!("Bỏ qua – ổ chưa kết nối: {}. ", s.scan.skipped_roots.join(", ")));

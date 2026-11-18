@@ -26,8 +26,6 @@ pub struct Config {
     pub exclude_names: Vec<String>,
     /// Chế độ chỉ đọc toàn app (E10-02): không xoá, không di chuyển.
     pub read_only: bool,
-    /// E8-05: tự dọn trùng chắc chắn khi quét ngầm. Mặc định TẮT.
-    pub auto_clean_exact_in_background: bool,
     /// Tự phân loại hộp thư đến mỗi lần quét (đọc metadata.opf, làm phẳng thư mục kiểu Calibre, tạo thư mục
     /// thể loại mới, chưa chắc → "Khác", dọn mọi file không phải sách và thư mục thừa vào Thùng rác). Mặc định BẬT.
     pub auto_triage: bool,
@@ -43,13 +41,18 @@ pub struct Config {
     /// `Tiểu thuyết` và `tieu-thuyet` là một. Đổi ánh xạ thì sách mang tag đó được chuyển sang thư mục mới; sách mới
     /// tự phân loại cũng theo ánh xạ trước luật có sẵn. Xem `tagmap.rs`.
     pub tag_map: Vec<TagRule>,
+    /// Thư mục con thể loại do app tạo / quản lý (đường dẫn tương đối, `/`, vd. `Tiểu thuyết/Nước ngoài`). Chỉ các
+    /// thư mục này (và đích của `tag_map`) hiện trong app và giữ lại khi quét; thư mục con khác (chép theo từ nguồn)
+    /// bị làm phẳng nếu bật `flatten_subfolders`. Xem `subcats.rs`.
+    pub subcategories: Vec<String>,
+    /// Mỗi lần quét, đưa file sách trong thư mục con không do app quản lý ra thư mục thể loại (hoàn tác được) rồi đưa
+    /// thư mục con đã hết sách vào Thùng rác. Mặc định BẬT.
+    pub flatten_subfolders: bool,
     /// Ngưỡng tin cậy phân loại (E6-04).
     pub classify_high: u8,
     pub classify_medium: u8,
     /// Số luồng băm (SSD ngoài: 2–4 là hợp lý; chốt ở S5).
     pub hash_threads: usize,
-    /// Giờ quét ngầm hằng ngày (HH:MM) – dùng ở M6.
-    pub scan_time: String,
 }
 
 impl Default for Config {
@@ -62,15 +65,15 @@ impl Default for Config {
             extra_roots: Vec::new(),
             exclude_names: vec!["$RECYCLE.BIN".into(), "System Volume Information".into(), ".Trashes".into()],
             read_only: false,
-            auto_clean_exact_in_background: false,
             auto_triage: true,
             auto_reject_deleted: true,
             blocked_categories: Vec::new(),
             tag_map: Vec::new(),
+            subcategories: Vec::new(),
+            flatten_subfolders: true,
             classify_high: 75,
             classify_medium: 45,
             hash_threads: 3,
-            scan_time: "03:00".into(),
         }
     }
 }
@@ -129,6 +132,20 @@ impl Config {
     /// Có ít nhất một thư mục thư viện đang truy cập được.
     pub fn library_online(&self) -> bool {
         self.library_roots().iter().any(|r| r.is_dir())
+    }
+
+    /// Thư mục `parts` (tên từng cấp, tính từ thư mục thư viện, ≥ 2 cấp) là thư mục con thể loại do app quản lý
+    /// (`subcategories`, đích của `tag_map`, hoặc thư mục cha của chúng).
+    pub fn is_subcategory(&self, parts: &[String]) -> bool {
+        if parts.len() < 2 {
+            return false;
+        }
+        let key = |s: &str| crate::normalize::simple_key(s);
+        let want: Vec<String> = parts.iter().map(|p| key(p)).collect();
+        self.subcategories.iter().chain(self.tag_map.iter().map(|t| &t.target)).any(|rel| {
+            let k: Vec<String> = rel.split(['/', '\\']).filter(|c| !c.trim().is_empty()).map(key).collect();
+            k.len() >= want.len() && k[..want.len()] == want[..]
+        })
     }
 
     /// Mọi thư mục gốc cần quét: thư viện trước, rồi các nguồn phụ.

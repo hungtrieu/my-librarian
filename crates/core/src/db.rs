@@ -202,6 +202,10 @@ const MIGRATIONS: &[&str] = &[
     INSERT OR REPLACE INTO meta(key, value)
         SELECT 'reject_deleted_after', CAST(COALESCE(MAX(id), 0) AS TEXT) FROM scan_reports;
     "#,
+    // v7: thông tin sách người dùng sửa trong app (metaedit.rs, JSON) – thắng thông tin đọc từ file ở các lần quét sau.
+    r#"
+    ALTER TABLE books ADD COLUMN user_meta TEXT;
+    "#,
 ];
 
 pub fn now() -> i64 {

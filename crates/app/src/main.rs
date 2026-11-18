@@ -11,6 +11,7 @@ use librarian_core::classify::{self, Proposal};
 use librarian_core::covers::CoverCache;
 use librarian_core::dedupe::{self, Decision, ExactGroup, SuspectGroup};
 use librarian_core::folders;
+use librarian_core::similar;
 use librarian_core::formats::Format;
 use librarian_core::moves::{self, BatchInfo, MoveReport, MoveRequest, Operation, UndoReport};
 use librarian_core::progress::{self, Watchdog};
@@ -119,6 +120,8 @@ struct Overview {
     library_ok: bool,
     facets: browse::Facets,
     categories: Vec<CategoryInfo>,
+    /// Thư mục con thể loại do app quản lý (thanh bên).
+    subfolders: Vec<librarian_core::subcats::SubFolder>,
     banner: Option<String>,
     /// Thông báo một lần lúc khởi động (DB hỏng đã khôi phục…).
     notice: Option<String>,
@@ -155,11 +158,13 @@ async fn overview(state: State<'_, AppState>) -> CmdResult<Overview> {
             Vec::new()
         };
         let rep = report::latest(&lib.conn)?;
+        let subfolders = if library_ok { librarian_core::subcats::list(&lib.conn, &lib.config)? } else { Vec::new() };
         Ok(Overview {
             config: lib.config.clone(),
             library_ok,
             facets: browse::facets(&lib.conn)?,
             categories,
+            subfolders,
             banner: rep.as_ref().and_then(report::banner),
             notice: lib.notice.take(),
             report: rep,
@@ -516,6 +521,26 @@ async fn retitle_books(
     .await
 }
 
+/// Sửa thông tin một cuốn (metaedit.rs). `write_file`: ghi luôn vào file nếu là EPUB / FB2.
+#[tauri::command]
+async fn edit_book_meta(
+    state: State<'_, AppState>,
+    id: i64,
+    meta: librarian_core::metaedit::MetaEdit,
+    write_file: bool,
+) -> CmdResult<librarian_core::metaedit::EditReport> {
+    if id < 0 {
+        return Err("Chỉ sửa được sách trong thư viện".into());
+    }
+    if busy_kind(&state).is_some() {
+        return Err("Đang quét hoặc dọn – đợi xong rồi sửa".into());
+    }
+    with_lib(&state.lib, move |lib| {
+        librarian_core::metaedit::edit(&lib.conn, &lib.config, &SystemTrasher, id, &meta, write_file)
+    })
+    .await
+}
+
 // ------------------------------------------------------------------ thể loại bị chặn
 
 /// Cây thư mục thể loại (3 cấp) kèm số sách và trạng thái chặn – để chọn thư mục cần chặn.
@@ -594,7 +619,11 @@ async fn tag_map_save(state: State<'_, AppState>, changes: Vec<tagmap::Change>, 
         let (cfg, plan) = tag_plan(lib, &changes, all)?;
         lib.config.tag_map = cfg.tag_map;
         lib.save_config()?;
-        refreshed(lib, |lib| tagmap::apply(&lib.conn, &lib.config, &plan))
+        let rep = tagmap::apply(&lib.conn, &lib.config, &plan)?;
+        if let Err(e) = report::refresh_after_moves(&lib.conn, &lib.config, &rep.moved) {
+            tracing::warn!("cập nhật số liệu báo cáo lỗi: {e}");
+        }
+        Ok(rep)
     })
     .await
 }
@@ -641,9 +670,74 @@ async fn start_move_from_other(
         })
         .await?;
     }
-    spawn_clean(app, state, move |lib, cancel, on| {
+    spawn_job(app, state, Refresh::Inbox, move |lib, cancel, on| {
         let plan = tagmap::plan_from_other(&lib.conn, &lib.config, &target, &tags)?;
         tagmap::apply_with(&lib.conn, &lib.config, &plan, Some(cancel), Some(on))
+    })
+}
+
+/// Sau khi chuyển tay sách ra khỏi `Khác`: các cuốn còn trong `Khác` giống chúng – theo tag, tác giả (kể cả đoán từ
+/// tên file), bộ / tên sách, cụm tên file. Dùng được cả với sách không có metadata.
+#[tauri::command]
+async fn other_similar(state: State<'_, AppState>, moved: Vec<MovedIn>) -> CmdResult<Vec<similar::Suggestion>> {
+    with_lib(&state.lib, move |lib| {
+        let moved: Vec<(i64, String)> = moved.into_iter().map(|m| (m.book_id, m.from)).collect();
+        similar::suggestions(&lib.conn, &lib.config, &moved)
+    })
+    .await
+}
+
+/// Chuyển mọi sách trong `Khác` khớp một trong `criteria` vào `target` – nền, dừng được, hoàn tác được.
+/// `remember`: các dấu hiệu là tag thì ghi luôn vào ánh xạ tag → thể loại.
+#[tauri::command]
+async fn start_move_similar(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    target: String,
+    criteria: Vec<similar::Criterion>,
+    remember: bool,
+) -> CmdResult<()> {
+    if busy_kind(&state).is_some() {
+        return Err("Đang quét hoặc dọn – đợi xong rồi chuyển".into());
+    }
+    let tags: Vec<String> = criteria.iter().filter(|c| c.kind == "tag").map(|c| c.label.clone()).collect();
+    if remember && !tags.is_empty() {
+        let t = target.clone();
+        with_lib(&state.lib, move |lib| {
+            let changes: Vec<tagmap::Change> =
+                tags.into_iter().map(|tag| tagmap::Change { tag, target: Some(t.clone()) }).collect();
+            tagmap::apply_changes(&mut lib.config, &changes)?;
+            lib.save_config()
+        })
+        .await?;
+    }
+    spawn_job(app, state, Refresh::Inbox, move |lib, cancel, on| {
+        let plan = similar::plan_similar(&lib.conn, &lib.config, &target, &criteria)?;
+        tagmap::apply_kind(&lib.conn, &lib.config, &plan, similar::OTHER_KIND, Some(cancel), Some(on))
+    })
+}
+
+/// Màn "Phân loại Khác": thể loại đoán được cho sách trong `Khác` (≥ `min_conf`), mỗi thể loại bao nhiêu cuốn.
+#[tauri::command]
+async fn other_view(state: State<'_, AppState>, min_conf: u8) -> CmdResult<similar::OtherView> {
+    with_lib(&state.lib, move |lib| similar::other_view(&lib.conn, &lib.config, min_conf)).await
+}
+
+/// Chuyển sách trong `Khác` được đoán thuộc `targets` (≥ `min_conf`, trừ `exclude`) – nền, dừng được, hoàn tác được.
+#[tauri::command]
+async fn start_other_classify(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    targets: Vec<String>,
+    min_conf: u8,
+    exclude: Vec<i64>,
+) -> CmdResult<()> {
+    if busy_kind(&state).is_some() {
+        return Err("Đang quét hoặc dọn – đợi xong rồi chuyển".into());
+    }
+    spawn_job(app, state, Refresh::Inbox, move |lib, cancel, on| {
+        let plan = similar::other_plan(&lib.conn, &lib.config, &targets, min_conf, &exclude)?;
+        tagmap::apply_kind(&lib.conn, &lib.config, &plan, similar::OTHER_KIND, Some(cancel), Some(on))
     })
 }
 
@@ -652,7 +746,12 @@ async fn start_move_from_other(
 /// Thêm thể loại (`parent` trống) hoặc thư mục con. Trả về đường dẫn tương đối mới.
 #[tauri::command]
 async fn folder_create(state: State<'_, AppState>, parent: Option<String>, name: String) -> CmdResult<String> {
-    with_lib(&state.lib, move |lib| folders::create(&lib.config, parent.as_deref(), &name)).await
+    with_lib(&state.lib, move |lib| {
+        let rel = folders::create(&mut lib.config, parent.as_deref(), &name)?;
+        lib.save_config()?;
+        Ok(rel)
+    })
+    .await
 }
 
 /// Đổi tên thư mục `rel` trên mọi ổ (thư mục thật trên đĩa), cập nhật đường dẫn sách, danh sách chặn, ánh xạ tag.
@@ -682,7 +781,7 @@ async fn start_folder_delete(app: AppHandle, state: State<'_, AppState>, rel: St
         lib.save_config()
     })
     .await?;
-    spawn_clean(app, state, move |lib, cancel, on| {
+    spawn_job(app, state, Refresh::Inbox, move |lib, cancel, on| {
         folders::delete(&lib.conn, &lib.config, &SystemTrasher, &rel, Some(cancel), Some(on))
     })
 }
@@ -824,6 +923,23 @@ where
     F: FnOnce(&Library, &AtomicBool, &dyn Fn(Step)) -> librarian_core::Result<R> + Send + 'static,
     R: Serialize + 'static,
 {
+    spawn_job(app, state, Refresh::Full, job)
+}
+
+/// Số liệu cần tính lại khi việc nền xong.
+#[derive(Clone, Copy)]
+enum Refresh {
+    /// Trùng, nghi trùng, chờ phân loại (sau khi xoá / dọn).
+    Full,
+    /// Chỉ chờ phân loại: chuyển chỗ không đổi nội dung file nên số trùng / nghi trùng giữ nguyên.
+    Inbox,
+}
+
+fn spawn_job<F, R>(app: AppHandle, state: State<'_, AppState>, refresh: Refresh, job: F) -> CmdResult<()>
+where
+    F: FnOnce(&Library, &AtomicBool, &dyn Fn(Step)) -> librarian_core::Result<R> + Send + 'static,
+    R: Serialize + 'static,
+{
     if is_scanning(&state) {
         return Err("Đang quét thư viện – đợi quét xong rồi dọn".into());
     }
@@ -868,7 +984,7 @@ where
             on_stall,
         );
         let res = (|| -> librarian_core::Result<R> {
-            // Cùng khoá với quét (app + tác vụ quét ngầm): không dọn khi một tiến trình khác đang quét.
+            // Cùng khoá với quét (app + CLI): không dọn khi một tiến trình khác đang quét.
             let _lock = lock::ScanLock::try_acquire(&home)?;
             let lib = Library::open(&home)?;
             let emit_step = |s: Step| {
@@ -878,7 +994,11 @@ where
             let rep = job(&lib, &cancel, &emit_step)?;
             // Badge / banner: tính lại số trùng, nghi trùng… (kể cả khi đã dừng giữa chừng).
             emit_step(Step { phase: "refresh", done: 0, total: 0 });
-            if let Err(e) = report::refresh_counts(&lib.conn, &lib.config) {
+            let r = match refresh {
+                Refresh::Full => report::refresh_counts(&lib.conn, &lib.config),
+                Refresh::Inbox => report::refresh_inbox_counts(&lib.conn, &lib.config),
+            };
+            if let Err(e) = r {
                 tracing::warn!("cập nhật số liệu báo cáo lỗi: {e}");
             }
             Ok(rep)
@@ -889,7 +1009,7 @@ where
             (Ok(r), None) => CleanDone { ok: true, message: None, report: serde_json::to_value(r).ok() },
             (Err(librarian_core::Error::Locked), None) => CleanDone {
                 ok: false,
-                message: Some("Tác vụ quét ngầm đang chạy – thử lại sau ít phút".into()),
+                message: Some("Đang có tiến trình khác quét thư viện – thử lại sau ít phút".into()),
                 report: None,
             },
             (Err(e), None) => CleanDone { ok: false, message: Some(e.to_string()), report: None },
@@ -973,9 +1093,35 @@ async fn apply_moves(state: State<'_, AppState>, moves: Vec<MoveIn>, kind: Optio
             .into_iter()
             .map(|m| MoveRequest { book_id: m.book_id, target_dir: PathBuf::from(m.target_dir) })
             .collect();
-        refreshed(lib, |lib| moves::apply_moves(&lib.conn, &lib.config, &reqs, kind.as_deref().unwrap_or("classify")))
+        let rep = moves::apply_moves(&lib.conn, &lib.config, &reqs, kind.as_deref().unwrap_or("classify"))?;
+        if let Err(e) = report::refresh_after_moves(&lib.conn, &lib.config, &rep.moved) {
+            tracing::warn!("cập nhật số liệu báo cáo lỗi: {e}");
+        }
+        Ok(rep)
     })
     .await
+}
+
+/// Như `apply_moves` nhưng chạy nền với hộp tiến trình, dừng được – cho lô lớn (hàng nghìn cuốn) chuyển tay.
+#[tauri::command]
+fn start_apply_moves(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    moves: Vec<MoveIn>,
+    kind: Option<String>,
+) -> CmdResult<()> {
+    if busy_kind(&state).is_some() {
+        return Err("Đang quét hoặc dọn – đợi xong rồi chuyển".into());
+    }
+    let reqs: Vec<MoveRequest> = moves
+        .into_iter()
+        .map(|m| MoveRequest { book_id: m.book_id, target_dir: PathBuf::from(m.target_dir) })
+        .collect();
+    let kind = kind.unwrap_or_else(|| "manual".into());
+    spawn_job(app, state, Refresh::Inbox, move |lib, cancel, on| {
+        let opts = moves::MoveOptions { exact: false, cancel: Some(cancel), progress: Some(on), names: None };
+        moves::apply_moves_with(&lib.conn, &lib.config, &reqs, &kind, &opts)
+    })
 }
 
 #[derive(Serialize)]
@@ -1793,6 +1939,11 @@ fn main() {
             volumes_info,
             other_tag_suggestions,
             start_move_from_other,
+            other_similar,
+            edit_book_meta,
+            start_move_similar,
+            other_view,
+            start_other_classify,
             folder_create,
             folder_rename,
             start_folder_delete,
@@ -1808,6 +1959,7 @@ fn main() {
             decide,
             propose,
             apply_moves,
+            start_apply_moves,
             undo_batch,
             list_batches,
             batch_ops,

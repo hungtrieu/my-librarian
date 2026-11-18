@@ -7,7 +7,7 @@ rồi mới bật thao tác thật. App không bao giờ ghi gì vào ổ sách 
 
 1. Chạy `scripts\ci.ps1` (bản đầy đủ) hoặc lấy bộ cài mới nhất trong `dist\<phiên bản>-<thời gian>-<commit>\`.
 2. Cài bằng `My Librarian_<phiên bản>_x64-setup.exe` (NSIS, cài cho riêng tài khoản, không cần quyền admin)
-   hoặc file `.msi`. Bộ cài kèm `librarian.exe` (CLI) và `librarian-bg.exe` (quét ngầm) trong thư mục cài.
+   hoặc file `.msi`. Bộ cài kèm `librarian.exe` (CLI) trong thư mục cài.
 3. Dữ liệu app nằm ở `%APPDATA%\my-librarian` (DB, ảnh bìa, cache, log, `backups\`).
    Gỡ cài đặt bằng NSIS và tick “Delete the application data” sẽ xoá thư mục này; sách không bị đụng tới.
 

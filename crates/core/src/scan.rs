@@ -47,7 +47,10 @@ pub fn locate(cfg: &Config, root: &Path, root_kind: &str, path: &Path) -> Locati
         && crate::triage::is_other_bucket(&comps[1])
         && (comps.len() == 3
             || (comps.len() == 4 && crate::triage::other_shelf_number(&comps[1], &comps[2]).is_some()));
-    let series_dir = if comps.len() >= 3 && !other_bucket { Some(comps[comps.len() - 2].clone()) } else { None };
+    // Thư mục con thể loại do app quản lý (`Tiểu thuyết/Nước ngoài`) không phải thư mục bộ.
+    let managed = comps.len() >= 3 && cfg.is_subcategory(&comps[..comps.len() - 1]);
+    let series_dir =
+        if comps.len() >= 3 && !other_bucket && !managed { Some(comps[comps.len() - 2].clone()) } else { None };
     Location { rel_path, category: Some(category), in_inbox, series_dir }
 }
 
@@ -294,49 +297,73 @@ pub(crate) fn upsert_file(
         conn.last_insert_rowid()
     };
     db::fts_upsert(conn, id)?;
+    // Thông tin người dùng đã sửa trong app (metaedit.rs) thắng thông tin đọc từ file.
+    if existing.is_some() {
+        crate::metaedit::reapply(conn, id)?;
+    }
     Ok(id)
 }
 
 /// Cập nhật vị trí (sau khi di chuyển trong app) mà không đọc lại metadata.
 pub(crate) fn relocate(conn: &Connection, cfg: &Config, id: i64, new_path: &Path) -> Result<()> {
-    let (root_id, root, kind) = root_for(conn, new_path)?
+    relocate_in(conn, cfg, &all_roots(conn)?, id, new_path)
+}
+
+/// Như [`relocate`] với danh sách thư mục gốc đọc sẵn ([`all_roots`]) – dùng khi chuyển cả lô.
+pub(crate) fn relocate_in(
+    conn: &Connection,
+    cfg: &Config,
+    roots: &[(i64, PathBuf, String)],
+    id: i64,
+    new_path: &Path,
+) -> Result<()> {
+    let (root_id, root, kind) = pick_root(roots, new_path)
         .ok_or_else(|| crate::Error::msg(format!("{} không nằm trong thư mục gốc nào", new_path.display())))?;
-    let loc = locate(cfg, &root, &kind, new_path);
+    let loc = locate(cfg, root, kind, new_path);
     let file_name = new_path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let stem = new_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let (old_series, old_volume): (Option<String>, Option<i64>) =
-        conn.query_row("SELECT series, volume FROM books WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let (old_series, old_volume): (Option<String>, Option<i64>) = conn
+        .prepare_cached("SELECT series, volume FROM books WHERE id=?1")?
+        .query_row([id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     let series = loc.series_dir.clone().or(old_series);
     let volume = match &loc.series_dir {
         Some(s) => parse_volume(&stem, Some(s)).map(|v| v as i64).or(old_volume),
         None => old_volume,
     };
-    conn.execute(
+    conn.prepare_cached(
         "UPDATE books SET root_id=?2, path=?3, rel_path=?4, file_name=?5, category=?6, in_inbox=?7,
            series=?8, volume=?9, status='present', updated_at=?10 WHERE id=?1",
-        params![
-            id,
-            root_id,
-            new_path.to_string_lossy(),
-            loc.rel_path,
-            file_name,
-            loc.category,
-            loc.in_inbox,
-            series,
-            volume,
-            now()
-        ],
-    )?;
+    )?
+    .execute(params![
+        id,
+        root_id,
+        new_path.to_string_lossy(),
+        loc.rel_path,
+        file_name,
+        loc.category,
+        loc.in_inbox,
+        series,
+        volume,
+        now()
+    ])?;
     db::fts_upsert(conn, id)
 }
 
-/// Thư mục gốc (đã đăng ký) chứa `path`.
-pub(crate) fn root_for(conn: &Connection, path: &Path) -> Result<Option<(i64, PathBuf, String)>> {
-    let mut st = conn.prepare("SELECT id, path, kind FROM roots")?;
+/// Mọi thư mục gốc đã đăng ký: (id, đường dẫn, loại).
+pub(crate) fn all_roots(conn: &Connection) -> Result<Vec<(i64, PathBuf, String)>> {
+    let mut st = conn.prepare_cached("SELECT id, path, kind FROM roots")?;
     let roots = st
         .query_map([], |r| Ok((r.get::<_, i64>(0)?, PathBuf::from(r.get::<_, String>(1)?), r.get::<_, String>(2)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(roots.into_iter().filter(|(_, p, _)| path.starts_with(p)).max_by_key(|(_, p, _)| p.components().count()))
+    Ok(roots)
+}
+
+fn pick_root<'a>(roots: &'a [(i64, PathBuf, String)], path: &Path) -> Option<(i64, &'a Path, &'a str)> {
+    roots
+        .iter()
+        .filter(|(_, p, _)| path.starts_with(p))
+        .max_by_key(|(_, p, _)| p.components().count())
+        .map(|(id, p, k)| (*id, p.as_path(), k.as_str()))
 }
 
 pub fn scan(conn: &Connection, cfg: &Config, opts: &ScanOptions) -> Result<ScanSummary> {

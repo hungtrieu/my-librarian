@@ -362,7 +362,8 @@ pub fn plan(conn: &Connection, cfg: &Config, opts: &PlanOptions) -> Result<Plan>
             Resolve::Target { rel, tag } => (rel, tag),
         };
         // Phần đường dẫn đi theo sách: dưới thư mục quản lý sâu nhất chứa sách (không có thì dưới thể loại cấp 1).
-        let suffix: &[String] = if names.first().is_none_or(|n| crate::triage::is_other_dir(n)) {
+        // Làm phẳng thư mục con (`subcats.rs`): sách vào thẳng thư mục đích, không mang theo thư mục lạ.
+        let suffix: &[String] = if cfg.flatten_subfolders || names.first().is_none_or(|n| crate::triage::is_other_dir(n)) {
             &[]
         } else {
             let base = managed.iter().filter(|m| under(&keys, m)).map(Vec::len).max().unwrap_or(1).min(names.len());
@@ -401,6 +402,18 @@ pub fn apply_with(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     on: Option<crate::OnStep>,
 ) -> Result<MoveReport> {
+    apply_kind(conn, cfg, plan, TAGMAP_KIND, cancel, on)
+}
+
+/// Như [`apply_with`], ghi lô với loại `kind` trong Hoạt động.
+pub fn apply_kind(
+    conn: &Connection,
+    cfg: &Config,
+    plan: &Plan,
+    kind: &str,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    on: Option<crate::OnStep>,
+) -> Result<MoveReport> {
     if cfg.read_only {
         return Err(Error::ReadOnly);
     }
@@ -414,8 +427,8 @@ pub fn apply_with(
         let dir = dirs.entry(k).or_insert_with(|| crate::volumes::dir_on(Path::new(&m.root), &m.to)).clone();
         reqs.push(MoveRequest { book_id: m.book_id, target_dir: dir });
     }
-    let opts = moves::MoveOptions { exact: false, cancel, progress: on };
-    let rep = moves::apply_moves_with(conn, cfg, &reqs, TAGMAP_KIND, &opts)?;
+    let opts = moves::MoveOptions { exact: false, cancel, progress: on, names: None };
+    let rep = moves::apply_moves_with(conn, cfg, &reqs, kind, &opts)?;
     // Dọn thư mục con đã rỗng (không bao giờ thư mục cấp 1 hay thư mục do ánh xạ quản lý).
     let managed: HashSet<Vec<String>> = Mapping::new(cfg).target_keys().into_iter().collect();
     moves::prune_empty_dirs(cfg, &rep.moved, &|keys| managed.contains(keys));

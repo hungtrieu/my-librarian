@@ -1,7 +1,7 @@
 //! My Librarian – lõi quản lý kho ebook (không phụ thuộc UI).
 //!
 //! Luồng chính: [`scan::scan`] → [`hash::ensure_hashes`] → [`dedupe`] / [`classify`] → [`trash`] / [`moves`].
-//! [`report::run_analysis`] gói cả chuỗi cho tác vụ quét ngầm (chỉ đọc với file sách).
+//! [`report::run_analysis`] gói cả chuỗi phân tích sau mỗi lần quét.
 
 #[cfg(feature = "desktop")]
 pub mod backup;
@@ -31,6 +31,8 @@ pub mod lock;
 #[cfg(feature = "desktop")]
 pub mod logging;
 #[cfg(feature = "desktop")]
+pub mod metaedit;
+#[cfg(feature = "desktop")]
 pub mod moves;
 pub mod normalize;
 #[cfg(feature = "desktop")]
@@ -44,6 +46,10 @@ pub mod retitle;
 #[cfg(feature = "desktop")]
 pub mod scan;
 pub mod search;
+#[cfg(feature = "desktop")]
+pub mod similar;
+#[cfg(feature = "desktop")]
+pub mod subcats;
 #[cfg(feature = "desktop")]
 pub mod sync;
 pub mod sync_client;

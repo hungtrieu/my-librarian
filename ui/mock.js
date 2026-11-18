@@ -54,7 +54,7 @@ books.forEach((b, i) => {
         : b.category === 'Ngôn tình - Đam mỹ' ? (b.series === 'Đam mỹ' ? 'Đam mỹ; Romance' : 'Ngôn tình; Romance') : '';
 });
 const present = () => books.filter((b) => !b.gone);
-let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_clean_exact_in_background: false, auto_triage: true, auto_reject_deleted: true, blocked_categories: [], tag_map: [], extra_libraries: ['G:\\sach'], min_free_gb: 20, classify_high: 75, classify_medium: 45, hash_threads: 3, scan_time: '03:00' };
+let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_triage: true, auto_reject_deleted: true, blocked_categories: [], tag_map: [], subcategories: ['Văn học/Nguyễn Nhật Ánh', 'Ngôn tình - Đam mỹ/Đam mỹ'], flatten_subfolders: true, extra_libraries: ['G:\\sach'], min_free_gb: 20, classify_high: 75, classify_medium: 45, hash_threads: 3 };
 const decided = new Set();
 const TEXT = new Set(['epub', 'mobi', 'prc', 'azw', 'azw3', 'kf8', 'fb2', 'txt']);
 // Hai thiết bị mẫu; ?nodevices=1 để xem lúc chưa ghép.
@@ -83,6 +83,7 @@ function query(q) {
     r = r.filter((b) => { const words = fold(`${b.title} ${b.authors} ${b.file_name} ${b.series || ''}`).split(/[^\p{L}\p{N}]+/u); return toks.every((t) => words.some((w) => w.startsWith(t))); });
   }
   if (q.category != null) r = r.filter((b) => (q.category === '' ? !b.category : fold(b.category) === fold(q.category)));
+  if (q.folder) { const w = q.folder.split('/').map(fold); r = r.filter((b) => { const p = (b.rel_path || '').split('\\').map(fold); return p.length > w.length && w.every((x, i) => p[i] === x); }); }
   if (q.format) r = r.filter((b) => b.format === q.format);
   if (q.read_status) r = r.filter((b) => b.read_status === q.read_status);
   if (q.problems) r = r.filter((b) => b.error || b.drm);
@@ -182,7 +183,8 @@ const trash = (ids) => { const t = ids.map(byId).filter(Boolean); t.forEach((b) 
 const mockClean = { cancel: false };
 const handlers = {
   overview: () => ({ config, library_ok: !!config.library_root, home: 'C:\\Users\\ban\\AppData\\Roaming\\my-librarian', scanning: false, categories: cats(), report: report(),
-    banner: `Từ lần quét ngầm gần nhất: ${suspects().length} nhóm nghi trùng, ${exact().length} bản trùng chắc chắn, ${present().filter((b) => b.in_inbox).length} sách mới chờ phân loại.`,
+    subfolders: (config.subcategories || []).map((rel) => ({ rel, name: rel.split('/').pop(), depth: rel.split('/').length, path: 'E:\\books\\' + rel.split('/').join('\\'), books: query({ folder: rel, limit: 1e9 }).total ?? 0 })),
+    banner: `Từ lần quét gần nhất: ${suspects().length} nhóm nghi trùng, ${exact().length} bản trùng chắc chắn, ${present().filter((b) => b.in_inbox).length} sách mới chờ phân loại.`,
     facets: { total: present().length, bytes: 0, inbox: present().filter((b) => b.in_inbox).length, missing: 0, problems: present().filter((b) => b.error || b.drm).length, on_ipad: present().filter((b) => b.on_ipad).length,
       not_worth: present().filter((b) => b.not_worth).length,
       formats: Object.entries(present().reduce((m, b) => ((m[b.format] = (m[b.format] || 0) + 1), m), {})).sort((a, b) => b[1] - a[1]),
@@ -233,7 +235,24 @@ const handlers = {
       }
     }, 150);
   },
-  folder_create: ({ parent, name }) => { if (!parent) catNames.push(name); return parent ? parent + '/' + name : name; },
+  folder_create: ({ parent, name }) => { if (!parent) { catNames.push(name); return name; } const rel = parent + '/' + name; config.subcategories = [...(config.subcategories || []), rel].sort(); return rel; },
+  start_apply_moves: ({ moves, kind }) => { const r = handlers.apply_moves({ moves, kind }); let done = 0; const t = setInterval(() => { done = Math.min(moves.length, done + 40); emit('clean-progress', { phase: 'move', done, total: moves.length }); if (done >= moves.length) { clearInterval(t); emit('clean-done', { ok: true, report: { ...r, cancelled: false } }); } }, 120); },
+  other_similar: ({ moved }) => {
+    const src = moved.map((m) => byId(m.book_id)).filter(Boolean);
+    if (!src.length) return [];
+    const other = present().filter((b) => b.category === 'Khác');
+    return [{ target: src[0].category, books: Math.min(other.length, 23), criteria: [
+      { kind: 'author', key: 'anh nguyen nhat', label: 'Nguyễn Nhật Ánh', books: 9, samples: other.slice(0, 3).map((b) => b.title) },
+      { kind: 'series', key: 'kinh van hoa', label: 'Kính vạn hoa', books: 12, samples: ['Kính vạn hoa 2', 'Kính vạn hoa 7'] },
+      { kind: 'part', key: 'nxb tre', label: 'NXB Trẻ', books: 31, samples: ['Bàn có năm chỗ ngồi - NXB Trẻ'] }] }];
+  },
+  start_move_similar: ({ target }) => handlers.start_move_from_other({ target, tags: [] }),
+  other_view: ({ minConf }) => ({ total: 20132, guessed: minConf >= 75 ? 6210 : 11873, training: 18400, groups: [
+    { target: 'Văn học', books: 5120, high: 2890, samples: [{ book_id: 1, title: 'Kính vạn hoa', file_name: 'Kính vạn hoa - Nguyễn Nhật Ánh.epub', confidence: 92, reason: '41 sách cùng tác giả đang ở mục này' }, { book_id: 2, title: 'x', file_name: 'Ngồi khóc trên cây.pdf', confidence: 64, reason: 'Từ khoá khớp: khoc, cay' }] },
+    { target: 'Công nghệ', books: 2310, high: 1500, samples: [{ book_id: 3, title: 'y', file_name: 'Clean Architecture - Robert C. Martin.pdf', confidence: 88, reason: '7 sách cùng tác giả đang ở mục này' }] },
+    { target: 'truyen tranh', books: 1980, high: 1202, samples: [] }] }),
+  start_other_classify: () => { let done = 0; const total = 2310; const t = setInterval(() => { done = Math.min(total, done + 300); emit('clean-progress', { phase: 'move', done, total }); if (done >= total) { clearInterval(t); emit('clean-done', { ok: true, report: { batch_id: 88, moved: Array.from({ length: total }, (_, i) => ({ book_id: i })), failures: [], cancelled: false } }); } }, 150); },
+  edit_book_meta: ({ id, meta, writeFile }) => { const b = byId(id); Object.assign(b, { title: meta.title, authors: meta.authors.join('; '), subjects: meta.tags.join('; '), series: meta.series || null, volume: meta.volume, language: meta.language, isbn: meta.isbn }); return { book_id: id, written: writeFile && ['epub', 'fb2'].includes(b.format), note: writeFile && !['epub', 'fb2'].includes(b.format) ? 'Chỉ sửa trong thư viện' : null }; },
   folder_rename: ({ rel, name }) => {
     const parts = rel.split('/'); const n = present().filter((b) => b.category === parts[0]).length;
     if (parts.length === 1) { catNames[catNames.indexOf(parts[0])] = name; present().filter((b) => b.category === parts[0]).forEach((b) => { b.category = name; b.rel_path = name + b.rel_path.slice(parts[0].length); }); }

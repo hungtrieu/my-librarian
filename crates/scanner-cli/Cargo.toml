@@ -3,15 +3,11 @@ name = "librarian-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "CLI vÃ  tÃ¡c vá»¥ quÃ©t ngáº§m cá»§a My Librarian"
+description = "CLI của My Librarian"
 
 [[bin]]
 name = "librarian"
 path = "src/main.rs"
-
-[[bin]]
-name = "librarian-bg"
-path = "src/bin/librarian-bg.rs"
 
 [dependencies]
 librarian-core = { path = "../core" }

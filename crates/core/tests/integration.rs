@@ -61,6 +61,8 @@ fn setup() -> Env {
     let sample = testdata::generate_sample(tmp.path()).unwrap();
     let mut lib = Library::open(&tmp.path().join("home")).unwrap();
     lib.set_library_root(&sample.books).unwrap();
+    // Kho mẫu dùng thư mục bộ (`truyen tranh/7 seeds`) – hành vi khi tắt làm phẳng thư mục con (xem tests/subcats.rs).
+    lib.config.flatten_subfolders = false;
     let trash = FakeTrash::new(tmp.path().join("trash"));
     Env { _tmp: tmp, lib, sample, trash }
 }
@@ -460,8 +462,8 @@ fn background_analysis_is_read_only() {
     // Hợp đồng "chỉ đọc" áp dụng khi tắt tự phân loại (mặc định BẬT, xem test bên dưới).
     let cfg = Config { auto_triage: false, ..e.lib.config.clone() };
     let st = report::run_analysis(&e.lib.conn, &cfg, "background", None, Some(&fake)).unwrap();
-    assert_eq!(tree(&e.sample.books), before, "quét ngầm không thay đổi file sách nào");
-    assert_eq!(*fake.calls.borrow(), 0, "E8-05 mặc định tắt");
+    assert_eq!(tree(&e.sample.books), before, "phân tích không thay đổi file sách nào");
+    assert_eq!(*fake.calls.borrow(), 0, "phân tích không tự dọn trùng");
     assert_eq!((st.exact_groups, st.exact_files), (1, 1));
     assert!(st.suspect_groups >= 1);
     assert!(st.inbox_books >= 7);
@@ -527,16 +529,6 @@ fn stale_counts_fixed_without_new_action() {
 }
 
 #[test]
-fn auto_clean_only_when_enabled() {
-    let mut e = setup();
-    e.lib.config.auto_clean_exact_in_background = true;
-    let fake = FakeTrash::new(e._tmp.path().join("bg-trash"));
-    let st = report::run_analysis(&e.lib.conn, &e.lib.config, "background", None, Some(&fake)).unwrap();
-    assert_eq!(st.auto_cleaned, Some(1));
-    assert!(!e.sample.inbox.join("Mắt Biếc (1).epub").exists());
-}
-
-#[test]
 fn scan_lock_is_exclusive() {
     let tmp = tempfile::tempdir().unwrap();
     let a = lock::ScanLock::try_acquire(tmp.path()).unwrap();
@@ -549,7 +541,7 @@ fn scan_lock_is_exclusive() {
 fn config_roundtrip_defaults() {
     let tmp = tempfile::tempdir().unwrap();
     let c = Config::load(tmp.path()).unwrap();
-    assert!(!c.auto_clean_exact_in_background && !c.read_only);
+    assert!(!c.read_only);
     assert_eq!(c.inbox_name, "Chưa phân loại");
     let mut c2 = c.clone();
     c2.classify_high = 80;

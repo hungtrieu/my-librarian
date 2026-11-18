@@ -3,12 +3,6 @@
 ; nen khi go cai dat va ban tick "Delete the application data" thi xoa them. Cai de (cap nhat) khong dong toi.
 ; File sach trong thu vien KHONG bao gio bi dong toi.
 
-!macro NSIS_HOOK_PREUNINSTALL
-  ; Go tac vu quet ngam trong Task Scheduler (E8-02) neu da dang ky. Bo qua neu khong co.
-  nsExec::Exec 'schtasks /Delete /TN "My Librarian - Quet ngam" /F'
-  Pop $0
-!macroend
-
 !macro NSIS_HOOK_POSTUNINSTALL
   ; Luat tuong lua cong 47470 do app them (nut "Sua" o man iPad, I3-07). Cai dat che do currentUser
   ; khong co quyen Admin nen chi xoa khi luat ton tai, kem hop UAC. Cap nhat thi giu luat.

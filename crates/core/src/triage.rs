@@ -506,6 +506,7 @@ fn descend(
     top: &Path,
     u: &Unit,
     blocked: &crate::blocked::Blocked,
+    managed: Option<&crate::subcats::SubCats>,
     cache: &mut HashMap<PathBuf, SubDirs>,
 ) -> PathBuf {
     let mut dir = top.to_path_buf();
@@ -530,6 +531,14 @@ fn descend(
                 v
             })
             .clone();
+        // Chỉ thư mục con do app quản lý (thư mục chép theo từ nguồn sẽ bị làm phẳng khi quét).
+        if let Some(m) = managed {
+            subs.retain(|(n, _)| {
+                let mut k = keys.clone();
+                k.push(crate::blocked::name_key(n));
+                m.contains(&k)
+            });
+        }
         for b in blocked.children(&keys) {
             let k = crate::blocked::name_key(&b);
             if !subs.iter().any(|(n, _)| crate::blocked::name_key(n) == k) {
@@ -896,7 +905,10 @@ impl Shelves {
 
     /// Thư mục ngăn cho một file (chuyển tay vào `Khác`).
     pub(crate) fn dir_for(&mut self, file_name: &str) -> Result<PathBuf> {
-        Ok(self.place(&other_bucket(file_name), 1)?.dir.clone())
+        let l = self.place(&other_bucket(file_name), 1)?;
+        // Giữ chỗ trong ngăn: chuyển cả lô thì ngăn đầy [`OTHER_SHELF_MAX`] file mới sang ngăn kế tiếp.
+        l.cur.0.insert(name_key(file_name), 0);
+        Ok(l.dir.clone())
     }
 }
 
@@ -1096,6 +1108,7 @@ fn run_root(
     // Thể loại bị chặn mà thư mục đã được dọn khỏi đĩa: vẫn là "thư mục có sẵn" của luật tương ứng, để sách cùng
     // thể loại được nhận ra (và vào Thùng rác) thay vì tạo lại thư mục theo tên mặc định.
     let blocked = crate::blocked::Blocked::new(cfg);
+    let managed = cfg.flatten_subfolders.then(|| crate::subcats::SubCats::new(cfg));
     let mapping = crate::tagmap::Mapping::new(cfg);
     for name in blocked.top_levels() {
         let k = crate::blocked::name_key(&name);
@@ -1270,7 +1283,7 @@ fn run_root(
             let dest_dir = if is_other || mapped.is_some() {
                 cat_dir.clone()
             } else {
-                descend(root, &mirrors, &cat_dir, u, &blocked, &mut sub_cache)
+                descend(root, &mirrors, &cat_dir, u, &blocked, managed.as_ref(), &mut sub_cache)
             };
             if !is_other && !blocked.is_empty() {
                 let keys = crate::blocked::dir_keys(root, &dest_dir);
@@ -1659,7 +1672,16 @@ mod tests {
     fn goes_into_matching_user_subfolders() {
         let t = tempfile::tempdir().unwrap();
         let root = t.path();
-        let cfg = Config { library_root: Some(root.to_path_buf()), ..Config::default() };
+        let cfg = Config {
+            library_root: Some(root.to_path_buf()),
+            // Thư mục con người dùng tạo bằng app.
+            subcategories: vec![
+                "5. Ngôn Tình - Đam Mỹ/Đam Mỹ".into(),
+                "5. Ngôn Tình - Đam Mỹ/Ngôn Tình/Hiện đại".into(),
+                "5. Ngôn Tình - Đam Mỹ/Mới".into(),
+            ],
+            ..Config::default()
+        };
         let parent = root.join("5. Ngôn Tình - Đam Mỹ");
         std::fs::create_dir_all(parent.join("Đam Mỹ")).unwrap();
         std::fs::create_dir_all(parent.join("Ngôn Tình/Hiện đại")).unwrap();
@@ -1696,6 +1718,7 @@ mod tests {
         let mut cfg = Config { library_root: Some(root.to_path_buf()), ..Config::default() };
         // Thư mục con bị chặn đã được dọn khỏi đĩa, chỉ còn "Ngôn tình".
         std::fs::create_dir_all(root.join("Ngôn tình - Đam mỹ/Ngôn tình")).unwrap();
+        cfg.subcategories = vec!["Ngôn tình - Đam mỹ/Ngôn tình".into()];
         cfg.blocked_categories = vec!["Ngôn tình - Đam mỹ/Đam mỹ".into(), "8. Trinh Thám".into()];
         let inbox = root.join("Chưa phân loại");
         for (name, tag) in

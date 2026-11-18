@@ -2,7 +2,7 @@
 
 ![My Librarian trên Windows và điện thoại](docs/images/intro.png)
 
-Ứng dụng Windows quản lý kho ebook: quét, tìm nhanh không dấu, phát hiện trùng lặp an toàn, phân loại vào các thư mục thể loại có sẵn, quét ngầm hằng ngày. Yêu cầu: [docs/BRD.md](docs/BRD.md) · Backlog & tiến độ: [docs/BACKLOG.md](docs/BACKLOG.md).
+Ứng dụng Windows quản lý kho ebook: quét, tìm nhanh không dấu, phát hiện trùng lặp an toàn, phân loại vào các thư mục thể loại có sẵn. Yêu cầu: [docs/BRD.md](docs/BRD.md) · Backlog & tiến độ: [docs/BACKLOG.md](docs/BACKLOG.md).
 
 Hiện có **lõi Rust (`crates/core`), CLI (`crates/scanner-cli`) và app Tauri 2 (`crates/app` + `ui/`)** với giao diện thư viện kiểu Apple Books (M1–M4) và **trình đọc trong app** (M5): EPUB, MOBI/AZW/AZW3, FB2, CBZ, CBR (zip và RAR), PDF, TXT. DJVU vẫn mở bằng ứng dụng mặc định của Windows. Bộ cài .msi / NSIS do `scripts\ci.ps1` tạo trong `dist\`; trước khi dùng trên kho thật hãy làm theo [docs/TRIAL.md](docs/TRIAL.md). Số đo hiệu năng: [docs/PERF.md](docs/PERF.md) (`librarian bench`). Chi tiết: [docs/BACKLOG.md](docs/BACKLOG.md#10-tiến-độ).
 
@@ -10,7 +10,7 @@ Hiện có **lõi Rust (`crates/core`), CLI (`crates/scanner-cli`) và app Tauri
 
 ```
 crates/core/         thư viện lõi: scan, metadata, SQLite+FTS5, băm, dedupe, phân loại, di chuyển/hoàn tác, thùng rác
-crates/scanner-cli/  librarian.exe (CLI) và librarian-bg.exe (tác vụ ngầm, không cửa sổ)
+crates/scanner-cli/  librarian.exe (CLI)
 crates/app/          my-librarian.exe – app Tauri 2 (IPC + giao thức cover:// cho ảnh bìa)
 crates/ipad/         app iPad + iPhone (Tauri 2, iOS) và điện thoại Android – đọc sách đồng bộ từ app Windows qua Wi-Fi
 ui/                  giao diện HTML/CSS/JS thuần (không cần bước build); mock.js = backend giả để xem trên trình duyệt
@@ -61,6 +61,9 @@ Chạy lần lượt: format → clippy (`-D warnings`) → test → build relea
 
 - **Thông tin & tag:** chuột phải lên sách → *Thông tin & tag…*: tag (metadata `subject`), tác giả, bộ, ngôn ngữ, ISBN, số trang, đường dẫn, SHA-256… Bấm một tag để mở nó ở màn *Tag → thể loại*; tag đã gán thể loại hiện kèm thư mục đích.
 - **Chuyển luôn sách cùng tag ra khỏi `Khác`:** chuyển tay (kéo thả / *Chuyển vào thư mục…*) sách từ `Khác` vào một thể loại → app hỏi có chuyển luôn các cuốn khác trong `Khác` (mọi ổ) mang cùng tag không, cho chọn tag, tuỳ chọn ghi nhớ tag → thể loại cho sách mới. Chuyển ở nền với hộp tiến trình, dừng được, hoàn tác được; sách ở lại ổ của nó.
+- **Thư mục con do app quản lý:** chỉ thư mục con tạo bằng app (chuột phải thể loại → *Thêm thư mục con…*; gõ đúng tên một thư mục có sẵn để giữ nó) và đích của *Tag → thể loại* mới hiện ở thanh bên (kéo thả vào được, bấm để xem). Mỗi lần quét (khi bật tự phân loại), sách trong thư mục con khác – chép theo từ nguồn – được đưa ra thư mục thể loại; tên chung chung (`Tập 3.cbz`) thành `One Piece - Tập 3.cbz`, trùng tên thêm `(1)`, thư mục đã hết sách vào Thùng rác. Lô *Làm phẳng thư mục con* hoàn tác được; tắt ở Cài đặt → *Thư mục con*. Lõi: `crates/core/src/subcats.rs`.
+- **Sửa thông tin sách:** *Thông tin & tag…* → *Sửa thông tin…*: tiêu đề, tác giả, tag, bộ + số tập, ngôn ngữ, ISBN. EPUB và FB2 ghi được vào file (ghi file tạm → đọc lại xác minh → bản gốc vào Thùng rác); định dạng khác chỉ sửa trong thư viện nhưng vẫn giữ qua các lần quét. Lõi: `crates/core/src/metaedit.rs`.
+- **Đưa sách ra khỏi `Khác` (kể cả sách không có metadata):** sau khi chuyển tay, app tìm sách giống vậy theo tác giả (kể cả tên tác giả trong tên file), bộ / tên sách, tag, cụm tên file chung. Màn **Phân loại Khác** đoán thể loại cho mọi sách trong `Khác` từ chính các thư mục thể loại (tên sách, tag, tác giả) – chọn thể loại + ngưỡng tin cậy rồi chuyển cả loạt ở nền. Lõi: `crates/core/src/similar.rs`.
 - **Quản lý thư mục:** chuột phải lên thể loại ở thanh bên (đổi tên, thêm thư mục con, xoá), nút **+** cạnh *Bộ sưu tập*, hoặc Cài đặt → *Thư mục thể loại*. Sửa thẳng thư mục thật trên mọi ổ có thư mục đó; đổi tên cập nhật đường dẫn sách, thể loại bị chặn và tag → thể loại. Xoá: sách bên trong chuyển ra trước (thể loại → `Khác`, thư mục con → thư mục cha, cùng ổ, hoàn tác được), rồi thư mục vào Thùng rác; thư mục còn sách chưa chuyển được thì giữ lại. Hộp thư đến và `Khác` không sửa được. Lõi: `crates/core/src/folders.rs`.
 
 ## Thư viện trên nhiều ổ cứng
@@ -140,14 +143,6 @@ Lệnh thay đổi file chỉ **xem trước**; thêm `--yes` để thực hiệ
 Thêm `--read-only` vào bất kỳ lệnh nào để chắc chắn không file nào bị thay đổi (dùng khi thử trên kho thật, E10-02). Thêm `--json` để lấy kết quả dạng JSON.
 
 **Thử trên kho thật:** chạy `librarian config --read-only true` trước, rồi `scan`, `analyze`, `dupes`, `suspects`, `classify`, `evaluate` để đối chiếu kết quả. Chỉ tắt read-only khi kết quả đã ổn.
-
-## Quét ngầm
-
-`librarian-bg.exe [--home <dir>]` chạy quét + băm + tìm trùng + đề xuất phân loại, chỉ ghi DB/log, rồi thoát (mã 0 = xong, 2 = app đang quét, 1 = lỗi). Việc đăng ký lịch trong Task Scheduler (E8-02) chưa làm. Tạm thời có thể đăng ký tay:
-
-```bash
-schtasks /Create /SC DAILY /ST 03:00 /TN "My Librarian scan" /TR "\"C:\path\librarian-bg.exe\""
-```
 
 ## Giấy phép
 

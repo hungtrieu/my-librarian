@@ -72,6 +72,8 @@ pub fn phase_label(phase: &str) -> &'static str {
         "reject_deleted" => "Loại sách đã xoá trước đây",
         "block" => "Xoá sách thuộc thể loại bị chặn",
         "block_clean" => "Dọn thư mục bị chặn",
+        "flatten" => "Đưa sách ra khỏi thư mục con lạ",
+        "flatten_clean" => "Dọn thư mục con đã hết sách",
         "analyze" => "Phân tích trùng & thể loại",
         "trash" => "Đưa file vào Thùng rác",
         "refresh" => "Cập nhật số liệu",

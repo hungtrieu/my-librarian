@@ -84,13 +84,21 @@ async function refreshOverview() {
 }
 const stats = () => S.ov?.report?.stats || null;
 
-function navItem(label, ico, target, count, badge, drop) {
+function navItem(label, ico, target, count, badge, drop, depth) {
   const v = S.view;
-  const cur = v.name === target.name && (target.scope ? v.scope === target.scope : true) && (target.category ? v.category === target.category : true);
-  // `drop`: thư mục thể loại nhận sách kéo thả từ lưới/danh sách.
-  return h('button', { class: 'nav-item', 'aria-current': cur ? 'page' : null, 'data-drop': drop ? drop.name : null, onclick: () => go(target) },
+  const cur = v.name === target.name && (target.scope ? v.scope === target.scope : true) && (target.category ? v.category === target.category : true)
+    && (target.scope === 'category' ? fold(v.folder || '') === fold(target.folder || '') : true);
+  // `drop`: thư mục thể loại / thư mục con nhận sách kéo thả từ lưới/danh sách ({ label, rel }).
+  return h('button', { class: 'nav-item' + (depth > 1 ? ' sub' : ''), style: depth > 1 ? `padding-left:${12 + (depth - 1) * 16}px` : null,
+    'aria-current': cur ? 'page' : null, 'data-drop': drop ? drop.label : null, 'data-rel': drop ? drop.rel : null, onclick: () => go(target) },
     h('span', { class: 'ico', 'aria-hidden': 'true' }, ico), h('span', { class: 'label' }, label),
     badge ? h('span', { class: 'badge' }, badge) : count != null ? h('span', { class: 'count' }, count.toLocaleString('vi-VN')) : null);
+}
+
+/** Thư mục con (do app quản lý) của thể loại `name`, theo thứ tự cây. */
+function subfoldersOf(name) {
+  const k = fold(name);
+  return (S.ov.subfolders || []).filter((sf) => fold(sf.rel.split('/')[0]) === k);
 }
 
 function renderNav() {
@@ -110,7 +118,7 @@ function renderNav() {
     const inboxKey = fold(ov.config.inbox_name);
     for (const c of ov.categories) {
       if (fold(c.name) === inboxKey) continue;
-      const el = navItem(c.name, '▤', { name: 'library', scope: 'category', category: c.name }, c.books, null, c);
+      const el = navItem(c.name, '▤', { name: 'library', scope: 'category', category: c.name }, c.books, null, { label: c.name, rel: c.name });
       if (fold(c.name) !== fold('Khác')) {
         el.addEventListener('contextmenu', (e) => {
           e.preventDefault();
@@ -126,12 +134,29 @@ function renderNav() {
         });
       }
       nav.push(el);
+      // Thư mục con do app quản lý (thư mục con chép theo từ nguồn được làm phẳng khi quét).
+      for (const sf of subfoldersOf(c.name)) {
+        const se = navItem(sf.name, '↳', { name: 'library', scope: 'category', category: c.name, folder: sf.rel }, sf.books, null, { label: relLabel(sf.rel), rel: sf.rel }, sf.depth);
+        se.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          const node = { rel: sf.rel, name: sf.name, depth: sf.depth, books: sf.books };
+          showMenu(e.clientX, e.clientY, [
+            { label: 'Đổi tên thư mục con…', run: () => renameFolder(node) },
+            { label: 'Thêm thư mục con…', run: () => addFolder(sf.rel) },
+            '-',
+            { label: `Chặn “${sf.name}”…`, danger: true, run: () => blockFolder(node) },
+            { label: 'Xoá thư mục con…', danger: true, run: () => deleteFolder(node) },
+          ]);
+        });
+        nav.push(se);
+      }
     }
   }
   nav.push(h('div', { class: 'nav-section' }, 'Dọn dẹp'),
     navItem('Trùng chắc chắn', '⧉', { name: 'dupes' }, null, st?.exact_files || null),
     navItem('Nghi trùng', '≈', { name: 'suspects' }, null, st?.suspect_groups || null),
     navItem('Phân loại', '⇢', { name: 'classify' }, null, st?.inbox_books || null),
+    navItem('Phân loại Khác', '⇉', { name: 'otherclassify' }, (ov.categories.find((c) => fold(c.name) === fold('Khác'))?.books) || null),
     navItem('Tag → thể loại', '#', { name: 'tags' }, (ov.config.tag_map || []).length || null),
     ov.facets.on_ipad ? navItem('Có trên iPad/iPhone', '▭', { name: 'library', scope: 'ipad' }, ov.facets.on_ipad) : null,
     ov.facets.problems ? navItem('Không đọc được', '⚠', { name: 'library', scope: 'problems' }, ov.facets.problems) : null,
@@ -193,6 +218,8 @@ function progressText(p) {
     case 'trash': return { text: `Đang đưa sách đã xoá trước đây (tải lại) vào Thùng rác ${of('file')}`, pct };
     case 'block': return { text: `Đang xoá sách thuộc thể loại bị chặn ${of('file')}`, pct };
     case 'block_clean': return { text: 'Đang dọn thư mục bị chặn…', pct: null };
+    case 'flatten': return { text: `Đang đưa sách ra khỏi thư mục con lạ ${of('file')}`, pct };
+    case 'flatten_clean': return { text: `Đang dọn thư mục con đã hết sách ${of('thư mục')}`, pct };
     case 'move': return { text: `Đang chuyển sách ${of('file')}`, pct };
     case 'analyze': {
       const part = ['tìm trùng chắc chắn', 'dọn trùng chắc chắn', 'tìm nghi trùng', 'đề xuất thể loại'][p.done || 0] || 'hoàn tất';
@@ -279,10 +306,12 @@ api.listen('scan-done', async (e) => {
 // Lõi gửi `clean-progress` ({ phase: 'trash' | 'refresh', done, total }), `clean-health` mỗi giây (giám sát treo)
 // và đúng một `clean-done`. Hộp này không đóng được bằng Esc / bấm ra ngoài – chỉ "Dừng" hoặc khi xong.
 const CL = { el: null, progress: null, health: null, stopping: false, kind: 'exact' };
-const CL_TITLE = { exact: 'Đang dọn trùng chắc chắn', suspects: 'Đang tự dọn nghi trùng ≥85%', block: 'Đang xoá sách trong thư mục bị chặn', balance: 'Đang chuyển sách sang ổ khác', undo: 'Đang trả sách về ổ cũ', tagmove: 'Đang chuyển sách cùng tag ra khỏi “Khác”', folderdel: 'Đang xoá thư mục' };
+const CL_TITLE = { exact: 'Đang dọn trùng chắc chắn', suspects: 'Đang tự dọn nghi trùng ≥85%', block: 'Đang xoá sách trong thư mục bị chặn', balance: 'Đang chuyển sách sang ổ khác', undo: 'Đang trả sách về ổ cũ', tagmove: 'Đang chuyển sách cùng tag ra khỏi “Khác”', folderdel: 'Đang xoá thư mục', manualmove: 'Đang chuyển sách', otherclassify: 'Đang chuyển sách ra khỏi “Khác”' };
 const CL_NOTE = {
   balance: 'Mỗi file được chép vào file tạm ở ổ mới, so SHA-256 với bản gốc, đổi tên rồi mới xoá bản cũ – mất điện giữa chừng cũng không hỏng sách. Dừng giữa chừng an toàn: sách đã chuyển giữ nguyên ở ổ mới (hoàn tác được ở Hoạt động), phần còn lại ở ổ cũ.',
   tagmove: 'Sách ở lại ổ đang chứa nó (chỉ đổi tên, tức thì). Dừng giữa chừng an toàn: sách đã chuyển giữ nguyên, hoàn tác được ở Hoạt động.',
+  manualmove: 'Sách ở lại ổ đang chứa nó (chỉ đổi tên, tức thì). Dừng giữa chừng an toàn: sách đã chuyển giữ nguyên, hoàn tác được ở Hoạt động.',
+  otherclassify: 'Sách ở lại ổ đang chứa nó (chỉ đổi tên, tức thì). Dừng giữa chừng an toàn: sách đã chuyển giữ nguyên, hoàn tác được ở Hoạt động.',
   folderdel: 'Sách trong thư mục được chuyển ra trước (thể loại → “Khác”, thư mục con → thư mục cha, cùng ổ), rồi thư mục vào Thùng rác. Dừng giữa chừng an toàn: thư mục được giữ lại.',
   undo: 'Chép an toàn từng file về chỗ cũ (file tạm → so SHA-256 → đổi tên → mới xoá). Dừng giữa chừng an toàn: bấm Hoàn tác lần nữa để làm tiếp phần còn lại.',
   block: 'Sách vào Thùng rác Windows (khôi phục được). Dừng giữa chừng an toàn: thư mục vẫn bị chặn, phần còn lại được dọn ở lần quét sau.',
@@ -316,8 +345,8 @@ function paintClean() {
   else if (p?.phase === 'trash') { text = `Đã đưa ${n(p.done)} / ${n(p.total)} bản thừa vào Thùng rác`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
   else if (p?.phase === 'block') { text = p.total ? `Đã đưa ${n(p.done)} / ${n(p.total)} sách vào Thùng rác` : 'Đang tìm sách trong thư mục bị chặn…'; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
   else if (p?.phase === 'block_clean') text = 'Đang đưa thư mục bị chặn vào Thùng rác…';
-  else if (p?.phase === 'move') { text = `Đã chuyển ${n(p.done)} / ${n(p.total)} sách ${({ undo: 'về chỗ cũ', tagmove: `vào “${CL.label}”`, folderdel: 'ra khỏi thư mục' })[CL.kind] || 'sang ổ khác'}`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
-  else if (p?.phase === 'refresh' && ['balance', 'undo', 'tagmove', 'folderdel'].includes(CL.kind)) text = 'Đã chuyển xong – đang cập nhật số liệu…';
+  else if (p?.phase === 'move') { text = `Đã chuyển ${n(p.done)} / ${n(p.total)} sách ${({ undo: 'về chỗ cũ', tagmove: `vào “${CL.label}”`, manualmove: `vào “${CL.label}”`, otherclassify: 'ra khỏi “Khác”', folderdel: 'ra khỏi thư mục' })[CL.kind] || 'sang ổ khác'}`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
+  else if (p?.phase === 'refresh' && ['balance', 'undo', 'tagmove', 'manualmove', 'otherclassify', 'folderdel'].includes(CL.kind)) text = 'Đã chuyển xong – đang cập nhật số liệu…';
   else if (p?.phase === 'suspect_hash') { text = `Đang tính độ tin cậy nghi trùng: ${n(p.done)} / ${n(p.total)} file`; pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null; }
   else if (p?.phase === 'refresh') text = 'Đã xoá xong – đang cập nhật số liệu trùng / nghi trùng…';
   CL.txt.textContent = text;
@@ -358,14 +387,20 @@ api.listen('clean-done', async (e) => {
   const p = e.payload;
   const kind = CL.kind;
   if (kind === 'suspects') S.autoSuspectsDone = true; // đã thử tự dọn trong phiên này – không tự chạy lại liên tục
-  const what = kind === 'block' ? 'xoá sách bị chặn' : kind === 'balance' ? 'chuyển sách sang ổ khác' : kind === 'undo' ? 'hoàn tác' : kind === 'tagmove' ? 'chuyển sách cùng tag' : kind === 'folderdel' ? 'xoá thư mục' : 'dọn trùng';
+  const what = kind === 'block' ? 'xoá sách bị chặn' : kind === 'balance' ? 'chuyển sách sang ổ khác' : kind === 'undo' ? 'hoàn tác' : kind === 'tagmove' ? 'chuyển sách cùng tag' : kind === 'manualmove' || kind === 'otherclassify' ? 'chuyển sách' : kind === 'folderdel' ? 'xoá thư mục' : 'dọn trùng';
   if (!p.ok && stalled) modal({ title: `Đã dừng ${what} vì bị treo`, body: p.message, cancel: null, ok: 'Đã hiểu' });
   else if (!p.ok) fail(`Lỗi khi ${what}: ` + p.message);
-  else if (kind === 'tagmove') {
+  else if (kind === 'tagmove' || kind === 'manualmove' || kind === 'otherclassify') {
     const r = p.report;
-    if (r.moved.length) toast((r.cancelled ? 'Đã dừng: ' : '') + `Đã chuyển ${r.moved.length.toLocaleString('vi-VN')} sách vào “${CL.label}”.`, { action: { label: 'Hoàn tác', run: () => undo(r.batch_id) }, ms: 9000 });
+    const where = kind === 'otherclassify' ? 'ra khỏi “Khác”' : `vào “${CL.label}”`;
+    if (r.moved.length) toast((r.cancelled ? 'Đã dừng: ' : '') + `Đã chuyển ${r.moved.length.toLocaleString('vi-VN')} sách ${where}.`, { action: { label: 'Hoàn tác', run: () => undo(r.batch_id) }, ms: 9000 });
     else toast('Không còn sách nào cần chuyển.');
     if (r.failures.length) fail(`${r.failures.length} file không chuyển được: ${r.failures[0].message}`);
+    await refreshOverview().catch(fail);
+    if (S.view.name === 'library' || S.view.name === 'series') await refreshKeepScroll();
+    else render();
+    if (kind === 'manualmove' && !r.cancelled) await offerSimilarFromOther(r.moved);
+    return;
   } else if (kind === 'folderdel') {
     const r = p.report, m = r.moves;
     if (r.cancelled) toast(`Đã dừng: ${m.moved.length} sách đã chuyển ra, thư mục “${CL.label}” được giữ lại.`, m.moved.length ? { action: { label: 'Hoàn tác', run: () => undo(m.batch_id) }, ms: 9000 } : {});
@@ -467,7 +502,7 @@ function render() {
   view.scrollTop = 0;
   grid = null;
   const v = S.view.name;
-  ({ library: renderLibrary, series: renderLibrary, dupes: renderDupes, suspects: renderSuspects, classify: renderClassify,
+  ({ library: renderLibrary, series: renderLibrary, dupes: renderDupes, suspects: renderSuspects, classify: renderClassify, otherclassify: renderOtherClassify,
     activity: renderActivity, settings: renderSettings, ipad: renderIpad, tags: renderTags, volumes: renderVolumes })[v]();
 }
 
@@ -677,7 +712,7 @@ function dragEnd(drop) {
     addEventListener('click', swallowClick, true);
     setTimeout(() => removeEventListener('click', swallowClick, true), 0);
   }
-  if (drop && d.target) moveToCategory(d.target.dataset.drop);
+  if (drop && d.target) moveToFolder(d.target.dataset.rel);
 }
 
 addEventListener('pointermove', (e) => {
@@ -703,34 +738,54 @@ addEventListener('pointercancel', () => dragEnd(false));
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && drag?.on) { e.stopPropagation(); dragEnd(false); } }, true);
 addEventListener('blur', () => dragEnd(false));
 
-/** Thả vùng chọn lên thư mục thể loại `name`: di chuyển file bằng apply_moves (kind manual – hoàn tác được ở toast và màn Hoạt động). */
-async function moveToCategory(name) {
-  const cat = S.ov.categories.find((c) => c.name === name);
+/** Lô chuyển tay lớn hơn chừng này cuốn thì chạy nền với hộp tiến trình (dừng được), không giữ giao diện chờ. */
+const BIG_MOVE = 300;
+
+/**
+ * Thả vùng chọn lên thư mục thể loại / thư mục con `rel` (`A` hoặc `A/B`): di chuyển file (kind manual – hoàn tác được
+ * ở toast và màn Hoạt động). Lô lớn chạy nền.
+ */
+async function moveToFolder(rel) {
+  if (!rel) return;
+  const parts = rel.split('/');
+  const cat = S.ov.categories.find((c) => fold(c.name) === fold(parts[0]));
   if (!cat) return;
+  const sf = parts.length > 1 ? (S.ov.subfolders || []).find((x) => fold(x.rel) === fold(rel)) : null;
+  if (parts.length > 1 && !sf) return;
+  const label = sf ? relLabel(sf.rel) : cat.name;
   if (S.ov.config.read_only) return fail('Đang bật chế độ chỉ đọc – tắt trong Cài đặt để di chuyển sách.');
   let books;
   try { books = (await selectedBooks()).filter((b) => b.id); } catch (e) { return fail(e); }
-  const k = fold(cat.name);
-  const todo = books.filter((b) => fold(b.category || '') !== k);
+  // Đã nằm đúng thư mục (không tính thư mục con của nó).
+  const want = (sf ? sf.rel : cat.name).split('/').map(fold).join('/');
+  const dirOf = (b) => (b.rel_path || '').split(/[\\/]/).slice(0, -1).map(fold).join('/');
+  const todo = books.filter((b) => dirOf(b) !== want && !(fold(b.category || '') === fold(cat.name) && !sf && !S.ov.config.flatten_subfolders));
   const already = books.length - todo.length;
-  if (!todo.length) return toast(books.length === 1 ? `“${books[0].title}” đã ở trong “${cat.name}”.` : `${books.length} quyển đã ở trong “${cat.name}”.`);
-  // Bộ truyện: thư mục đích đã có thư mục con cùng tên bộ thì cho vào đó, không thì vào thẳng thư mục thể loại.
+  if (!todo.length) return toast(books.length === 1 ? `“${books[0].title}” đã ở trong “${label}”.` : `${books.length} quyển đã ở trong “${label}”.`);
   const dirFor = (b) => {
-    const s = b.series && cat.series_dirs.find((x) => fold(x) === fold(b.series));
+    if (sf) return sf.path;
+    // Không làm phẳng: bộ truyện vào thư mục con cùng tên bộ nếu có (hành vi cũ).
+    const s = !S.ov.config.flatten_subfolders && b.series && cat.series_dirs.find((x) => fold(x) === fold(b.series));
     return s ? cat.path + '\\' + s : cat.path;
   };
+  const moves = todo.map((b) => ({ book_id: b.id, target_dir: dirFor(b) }));
+  S.sel.clear();
+  if (moves.length > BIG_MOVE) {
+    CL.kind = 'manualmove';
+    CL.label = label;
+    openCleanModal();
+    try { await call('start_apply_moves', { moves, kind: 'manual' }); } catch (e) { closeCleanModal(); fail(e); }
+    return;
+  }
   try {
-    const r = await call('apply_moves', { moves: todo.map((b) => ({ book_id: b.id, target_dir: dirFor(b) })), kind: 'manual' });
+    const r = await call('apply_moves', { moves, kind: 'manual' });
     if (r.failures.length) fail(`${r.failures.length} quyển không di chuyển được: ${r.failures[0].message}`);
-    if (r.moved.length) toast(`Đã chuyển ${r.moved.length} quyển vào “${cat.name}”` + (already ? ` · ${already} quyển đã ở đó sẵn` : '') + '.',
+    if (r.moved.length) toast(`Đã chuyển ${r.moved.length} quyển vào “${label}”` + (already ? ` · ${already} quyển đã ở đó sẵn` : '') + '.',
       { action: { label: 'Hoàn tác', run: () => undo(r.batch_id) } });
-    S.sel.clear();
-    await refreshOverview().catch(fail);
-    await refreshKeepScroll();
-    await offerSameTagsFromOther(r.moved);
+    await Promise.all([refreshOverview().catch(fail), refreshKeepScroll()]);
+    await offerSimilarFromOther(r.moved);
     return;
   } catch (e) { fail(e); }
-  S.sel.clear();
   await refreshOverview().catch(fail);
   await refreshKeepScroll();
 }
@@ -1012,12 +1067,20 @@ async function moveSelection() {
   const sel = h('select', { class: 'pill', style: 'width:100%' }, ...targets.map((t) => h('option', { value: t.path }, t.label)));
   const ok = await modal({ title: `Chuyển ${books.length} sách vào…`, ok: 'Chuyển', content: h('div', { style: 'margin-bottom:16px' }, sel) });
   if (!ok) return;
+  const moves = books.map((b) => ({ book_id: b.id, target_dir: sel.value }));
+  if (moves.length > BIG_MOVE) {
+    CL.kind = 'manualmove';
+    CL.label = targets.find((t) => t.path === sel.value)?.label || '';
+    openCleanModal();
+    try { await call('start_apply_moves', { moves, kind: 'manual' }); } catch (e) { closeCleanModal(); fail(e); }
+    return;
+  }
   try {
-    const r = await call('apply_moves', { moves: books.map((b) => ({ book_id: b.id, target_dir: sel.value })), kind: 'manual' });
+    const r = await call('apply_moves', { moves, kind: 'manual' });
     reportMoves(r);
     await refreshOverview();
     render();
-    await offerSameTagsFromOther(r.moved);
+    await offerSimilarFromOther(r.moved);
     return;
   } catch (e) { fail(e); }
   await refreshOverview();
@@ -1052,7 +1115,7 @@ function libraryQuery() {
     case 'problems': return { ...base, problems: true };
     case 'ipad': return { ...base, on_ipad: true };
     case 'not_worth': return { ...base, not_worth: true, group_series: true };
-    case 'category': return { ...base, category: v.category, group_series: true };
+    case 'category': return { ...base, category: v.category, folder: v.folder || null, group_series: true };
     default: return { ...base, group_series: true };
   }
 }
@@ -1060,7 +1123,7 @@ function libraryQuery() {
 function libraryTitle() {
   const v = S.view;
   if (v.name === 'series') return v.series;
-  return { all: 'Thư viện', reading: 'Đang đọc', series: 'Bộ truyện', inbox: S.ov.config.inbox_name, category: v.category, problems: 'Không đọc được', ipad: 'Có trên iPad', not_worth: 'Không đáng đọc' }[v.scope];
+  return { all: 'Thư viện', reading: 'Đang đọc', series: 'Bộ truyện', inbox: S.ov.config.inbox_name, category: v.folder ? relLabel(v.folder) : v.category, problems: 'Không đọc được', ipad: 'Có trên iPad', not_worth: 'Không đáng đọc' }[v.scope];
 }
 
 async function renderLibrary() {
@@ -1468,7 +1531,7 @@ async function showBookInfo(id) {
     return h('button', { class: 'tag chip', title: 'Mở ở màn Tag → thể loại', onclick: closeAnd(() => go({ name: 'tags', tag: t })) }, t, target ? h('span', { class: 'muted' }, ' → ' + relLabel(target)) : null);
   })) : h('span', { class: 'muted' }, 'Sách không có tag (metadata subject).');
   const status = { unread: 'Chưa đọc', reading: 'Đang đọc', read: 'Đã đọc' }[b.read_status] || b.read_status;
-  await modal({ title: b.title, ok: 'Đóng', cancel: null, content: h('div', { style: 'margin-bottom:16px' },
+  const edit = await modal({ title: b.title, ok: 'Sửa thông tin…', cancel: 'Đóng', content: h('div', { style: 'margin-bottom:16px' },
     h('table', { class: 'meta-table' }, h('tbody', {},
       row('Tag', tagBox),
       row('Tác giả', b.authors),
@@ -1484,37 +1547,150 @@ async function showBookInfo(id) {
       row('SHA-256', b.full_hash ? h('span', { class: 'path small' }, b.full_hash) : null),
       row('Lỗi đọc', b.error),
     ))) });
+  if (edit) await editBookInfo(b);
 }
 
 /**
- * Sau khi chuyển tay sách ra khỏi "Khác": hỏi có chuyển luôn các cuốn khác cùng tag trong "Khác" (mọi ổ) vào cùng
- * thư mục không. Chuyển ở nền với hộp tiến trình (có thể hàng nghìn cuốn), dừng được, hoàn tác được.
+ * Sửa thông tin sách: luôn sửa trong thư viện (giữ qua các lần quét); EPUB / FB2 ghi được luôn vào file (bản gốc vào
+ * Thùng rác Windows, khôi phục được). Định dạng khác chỉ sửa trong thư viện.
  */
-async function offerSameTagsFromOther(moved) {
+async function editBookInfo(b) {
+  const split = (s) => (s || '').split(';').map((x) => x.trim()).filter(Boolean);
+  const inp = (value, ph) => h('input', { type: 'text', class: 'pill', style: 'width:100%', value: value ?? '', placeholder: ph || '' });
+  const f = {
+    title: inp(b.title), authors: inp(split(b.authors).join('; '), 'Nhiều tác giả: cách nhau bằng ;'),
+    tags: inp(split(b.subjects).join('; '), 'Văn học; Tuổi học trò'), series: inp(b.series), volume: h('input', { type: 'number', min: 0, class: 'pill', style: 'width:90px', value: b.volume ?? '' }),
+    language: inp(b.language, 'vi, en…'), isbn: inp(b.isbn),
+  };
+  const canWrite = ['epub', 'fb2'].includes(b.format) && !b.drm;
+  const write = h('input', { type: 'checkbox', checked: canWrite && !S.ov.config.read_only, disabled: !canWrite || S.ov.config.read_only });
+  const row = (k, el) => h('tr', {}, h('th', {}, k), h('td', {}, el));
+  const ok = await modal({ title: 'Sửa thông tin sách', ok: 'Lưu', content: h('div', { style: 'margin-bottom:16px' },
+    h('table', { class: 'meta-table' }, h('tbody', {}, row('Tiêu đề', f.title), row('Tác giả', f.authors), row('Tag', f.tags),
+      row('Bộ', h('div', { style: 'display:flex;gap:8px' }, f.series, f.volume)), row('Ngôn ngữ', f.language), row('ISBN', f.isbn))),
+    h('label', { class: 'check' }, write, h('span', {}, 'Ghi vào file sách',
+      h('div', { class: 'small muted' }, canWrite ? 'Ghi vào metadata của file (EPUB / FB2) – trình đọc khác cũng thấy. Bản gốc vào Thùng rác Windows.'
+        : `${b.format.toUpperCase()}${b.drm ? ' có DRM' : ''}: chưa ghi được vào file – chỉ sửa trong thư viện (vẫn giữ sau mỗi lần quét).`)))) });
+  if (!ok) return;
+  const meta = { title: f.title.value, authors: split(f.authors.value), tags: split(f.tags.value), series: f.series.value,
+    volume: f.volume.value === '' ? null : Math.max(0, Math.round(+f.volume.value)), language: f.language.value, isbn: f.isbn.value };
+  try {
+    const r = await call('edit_book_meta', { id: b.id, meta, writeFile: write.checked });
+    toast(r.written ? 'Đã lưu thông tin vào file sách và thư viện.' : 'Đã lưu thông tin trong thư viện.' + (r.note && write.checked ? ' ' + r.note : ''), { error: !!(r.note && write.checked) });
+  } catch (e) { return fail(e); }
+  await refreshOverview().catch(fail);
+  await refreshKeepScroll();
+}
+
+const CRIT_KIND = { author: 'Tác giả', series: 'Bộ / tên sách', tag: 'Tag', part: 'Cụm trong tên file' };
+
+/**
+ * Sau khi chuyển tay sách ra khỏi "Khác": tìm các cuốn còn trong "Khác" (mọi ổ) giống sách vừa chuyển – theo tác giả
+ * (kể cả tên tác giả nằm trong tên file), bộ / tên sách, tag, cụm tên file chung – và hỏi có chuyển luôn không. Dùng
+ * được với sách không có metadata. Chuyển ở nền với hộp tiến trình, dừng được, hoàn tác được.
+ */
+async function offerSimilarFromOther(moved) {
   if (!moved?.length || S.ov.config.read_only) return;
   if (!moved.some((m) => /[\\/]kh[aá]c[\\/]/i.test(m.from) || fold(m.from).includes('\\khac\\') || fold(m.from).includes('/khac/'))) return;
   let sugs;
-  try { sugs = await call('other_tag_suggestions', { moved: moved.map((m) => ({ book_id: m.book_id, from: m.from })) }); } catch (e) { return fail(e); }
+  try { sugs = await call('other_similar', { moved: moved.map((m) => ({ book_id: m.book_id, from: m.from })) }); } catch (e) { return fail(e); }
   for (const sg of sugs) {
-    const checks = sg.tags.map((t, i) => ({ t, box: h('input', { type: 'checkbox', checked: i < 3 }) }));
+    // Tick sẵn dấu hiệu mạnh (tác giả, bộ) và tag; cụm tên file để người dùng tự chọn.
+    const checks = sg.criteria.map((c) => ({ c, box: h('input', { type: 'checkbox', checked: c.kind !== 'part' }) }));
     const remember = h('input', { type: 'checkbox' });
+    const total = h('b');
+    const recount = () => { total.textContent = checks.filter((x) => x.box.checked).reduce((n, x) => n + x.c.books, 0).toLocaleString('vi-VN'); };
+    checks.forEach((x) => x.box.addEventListener('change', recount));
+    recount();
+    const hasTag = sg.criteria.some((c) => c.kind === 'tag');
     const ok = await modal({
-      title: `Chuyển luôn sách cùng tag vào “${relLabel(sg.target)}”?`,
+      title: `Chuyển luôn sách giống vậy vào “${relLabel(sg.target)}”?`,
       ok: 'Chuyển', cancel: 'Không',
       content: h('div', { style: 'margin-bottom:16px' },
-        h('p', { class: 'small' }, `Trong “Khác” còn ${sg.books.toLocaleString('vi-VN')} cuốn mang tag giống sách bạn vừa chuyển. Chọn tag để chuyển các cuốn đó vào “${relLabel(sg.target)}”:`),
-        h('div', { class: 'block-tree', style: 'max-height:260px' }, ...checks.map(({ t, box }) => h('label', { class: 'block-row' }, box, h('span', { class: 'grow' }, t.tag), h('span', { class: 'muted small' }, `${t.books.toLocaleString('vi-VN')} cuốn`)))),
-        h('label', { class: 'check' }, remember, h('span', {}, 'Ghi nhớ: sách mới mang các tag này cũng vào thư mục này', h('div', { class: 'small muted' }, 'Lưu vào màn Tag → thể loại; đổi lúc nào cũng được.')))),
+        h('p', { class: 'small' }, `Trong “Khác” còn ${sg.books.toLocaleString('vi-VN')} cuốn giống sách bạn vừa chuyển. Chọn dấu hiệu để chuyển các cuốn đó vào “${relLabel(sg.target)}” (tối đa `, total, ' cuốn):'),
+        h('div', { class: 'block-tree', style: 'max-height:300px' }, ...checks.map(({ c, box }) => h('label', { class: 'block-row', title: c.samples.join('\n') }, box,
+          h('span', { class: 'grow' }, h('span', { class: 'muted small' }, CRIT_KIND[c.kind] + ': '), c.label,
+            c.samples.length ? h('div', { class: 'muted small' }, 'vd. ' + c.samples.slice(0, 3).join(' · ')) : null),
+          h('span', { class: 'muted small' }, `${c.books.toLocaleString('vi-VN')} cuốn`)))),
+        hasTag ? h('label', { class: 'check' }, remember, h('span', {}, 'Ghi nhớ tag: sách mới mang các tag đã chọn cũng vào thư mục này', h('div', { class: 'small muted' }, 'Lưu vào màn Tag → thể loại; đổi lúc nào cũng được.'))) : null),
     });
     if (!ok) continue;
-    const tags = checks.filter((c) => c.box.checked).map((c) => c.t.tag);
-    if (!tags.length) continue;
+    const criteria = checks.filter((x) => x.box.checked).map((x) => ({ kind: x.c.kind, key: x.c.key, label: x.c.label }));
+    if (!criteria.length) continue;
     CL.kind = 'tagmove';
     CL.label = relLabel(sg.target);
     openCleanModal();
-    try { await call('start_move_from_other', { target: sg.target, tags, remember: remember.checked }); } catch (e) { closeCleanModal(); fail(e); }
+    try { await call('start_move_similar', { target: sg.target, criteria, remember: remember.checked }); } catch (e) { closeCleanModal(); fail(e); }
     return; // mỗi lần một việc nền; các gợi ý khác (hiếm) bỏ qua
   }
+}
+
+// ------------------------------------------------------------------ phân loại sách trong "Khác"
+/**
+ * Màn "Phân loại Khác": app học từ sách đã nằm trong các thư mục thể loại (tên sách, tag, tác giả – kể cả tác giả
+ * đoán từ tên file) rồi đoán thể loại cho từng cuốn trong "Khác". Chọn thể loại + ngưỡng tin cậy → chuyển cả loạt ở
+ * nền (hoàn tác được ở Hoạt động).
+ */
+async function renderOtherClassify() {
+  if (!S.ov.library_ok) return renderWelcome();
+  const O = S.otherCls || (S.otherCls = { min: S.ov.config.classify_medium || 45, picked: new Set(), excluded: new Set(), open: null });
+  const minSel = h('select', { class: 'pill', 'aria-label': 'Ngưỡng tin cậy', onchange: (e) => { O.min = +e.target.value; O.picked.clear(); load(); } },
+    ...[[S.ov.config.classify_high || 75, 'Tin cậy cao'], [S.ov.config.classify_medium || 45, 'Từ trung bình'], [30, 'Cả đoán yếu (≥30%)']].map(([v, l]) => h('option', { value: v, selected: O.min === v }, l)));
+  toolbar('Phân loại Khác', 'đoán thể loại cho sách trong “Khác”', minSel);
+  const host = h('div', { class: 'pad' }), bar = h('div', { class: 'sticky-bar' });
+  let data = null;
+  const load = async () => {
+    host.replaceChildren(h('div', { class: 'muted' }, 'Đang học từ các thư mục thể loại và đoán sách trong “Khác”…'));
+    bar.replaceChildren();
+    try { data = await call('other_view', { minConf: O.min }); } catch (e) { return fail(e); }
+    paint();
+  };
+  const chosen = () => data.groups.filter((g) => O.picked.has(g.target));
+  const paintBar = () => {
+    const n = chosen().reduce((s, g) => s + g.books, 0) - [...O.excluded].filter((id) => chosen().some((g) => g.samples.some((x) => x.book_id === id))).length;
+    bar.replaceChildren(h('span', { class: 'grow' }, 'Sách ở lại ổ đang chứa nó (chỉ đổi tên). Chuyển xong vẫn hoàn tác được ở Hoạt động.'),
+      h('button', { class: 'btn primary', disabled: n <= 0, onclick: apply }, `Chuyển ${Math.max(0, n).toLocaleString('vi-VN')} sách`));
+  };
+  const apply = async () => {
+    const targets = chosen().map((g) => g.target);
+    if (!(await modal({ title: 'Chuyển sách ra khỏi “Khác”?', body: `Vào: ${targets.join(', ')}. Chạy nền, dừng được giữa chừng.`, ok: 'Chuyển' }))) return;
+    CL.kind = 'otherclassify';
+    CL.label = targets.join(', ');
+    openCleanModal();
+    try { await call('start_other_classify', { targets, minConf: O.min, exclude: [...O.excluded] }); O.picked.clear(); } catch (e) { closeCleanModal(); fail(e); }
+  };
+  const paint = () => {
+    if (!data.total) {
+      host.replaceChildren(h('div', { class: 'empty' }, h('div', {}, h('h2', {}, '“Khác” đang trống'), h('p', {}, 'Không còn sách nào cần phân loại.'))));
+      return;
+    }
+    const head = h('p', { class: 'small muted' }, `“Khác” có ${data.total.toLocaleString('vi-VN')} cuốn; app đoán được thể loại cho ${data.guessed.toLocaleString('vi-VN')} cuốn, học từ ${data.training.toLocaleString('vi-VN')} cuốn đã nằm trong thư mục thể loại. `
+      + 'Càng nhiều sách được phân loại đúng, lần đoán sau càng tốt – chuyển xong một đợt rồi mở lại màn này.');
+    const rows = data.groups.map((g) => {
+      const box = h('input', { type: 'checkbox', checked: O.picked.has(g.target), 'aria-label': 'Chọn ' + g.target,
+        onchange: (e) => { e.target.checked ? O.picked.add(g.target) : O.picked.delete(g.target); paintBar(); } });
+      const open = O.open === g.target;
+      const tr = h('tr', {},
+        h('td', {}, box),
+        h('td', {}, h('b', {}, g.target)),
+        h('td', {}, g.books.toLocaleString('vi-VN')),
+        h('td', {}, h('span', { class: 'tag ok' }, `${g.high.toLocaleString('vi-VN')} tin cậy cao`)),
+        h('td', {}, h('button', { class: 'btn small', onclick: () => { O.open = open ? null : g.target; paint(); } }, open ? 'Ẩn' : 'Xem ví dụ')));
+      if (!open) return [tr];
+      const detail = h('tr', {}, h('td', {}), h('td', { colspan: 4 }, h('div', { class: 'small', style: 'max-height:320px;overflow:auto' },
+        ...g.samples.map((x) => h('label', { class: 'block-row' },
+          h('input', { type: 'checkbox', checked: !O.excluded.has(x.book_id), onchange: (e) => { e.target.checked ? O.excluded.delete(x.book_id) : O.excluded.add(x.book_id); paintBar(); } }),
+          h('span', { class: 'grow' }, x.file_name, h('div', { class: 'muted' }, x.reason)), h('span', { class: 'muted' }, `${x.confidence}%`))),
+        g.books > g.samples.length ? h('div', { class: 'muted', style: 'margin-top:6px' }, `… và ${(g.books - g.samples.length).toLocaleString('vi-VN')} cuốn khác (sắp theo độ tin cậy)`) : null)));
+      return [tr, detail];
+    }).flat();
+    host.replaceChildren(head, data.groups.length
+      ? h('table', { class: 'list' }, h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, 'Thể loại đoán'), h('th', {}, 'Số sách'), h('th', {}, ''), h('th', {}, ''))), h('tbody', {}, ...rows))
+      : h('div', { class: 'empty' }, h('div', {}, h('h2', {}, 'Chưa đoán được cuốn nào'), h('p', {}, 'Hạ ngưỡng tin cậy, hoặc chuyển tay vài cuốn vào đúng thể loại để app học thêm.'))));
+    paintBar();
+  };
+  view.replaceChildren(host, bar);
+  await load();
 }
 
 // ------------------------------------------------------------------ thư mục thể loại (thêm / đổi tên / xoá)
@@ -1669,13 +1845,13 @@ async function renderActivity() {
   toolbar('Hoạt động', 'nhật ký xoá / di chuyển / hoàn tác', h('button', { class: 'btn', onclick: () => call('open_recycle_bin').catch(fail) }, 'Mở Thùng rác'));
   let batches, reports;
   try { [batches, reports] = await Promise.all([call('list_batches'), call('report_history')]); } catch (e) { return fail(e); }
-  const kinds = { dedupe: 'Dọn trùng', trash: 'Xoá', classify: 'Phân loại', manual: 'Chuyển tay', retitle: 'Sửa tiêu đề', block: 'Chặn thể loại', tagmap: 'Tag → thể loại', balance: 'Cân bằng ổ', folder_delete: 'Xoá thư mục', folder_rename: 'Đổi tên thư mục' };
+  const kinds = { dedupe: 'Dọn trùng', trash: 'Xoá', classify: 'Phân loại', manual: 'Chuyển tay', retitle: 'Sửa tiêu đề', metaedit: 'Sửa thông tin', block: 'Chặn thể loại', tagmap: 'Tag → thể loại', balance: 'Cân bằng ổ', folder_delete: 'Xoá thư mục', folder_rename: 'Đổi tên thư mục', flatten: 'Làm phẳng thư mục con', other_out: 'Chuyển ra khỏi Khác' };
   const host = h('div', { class: 'pad' });
   if (!batches.length) host.append(h('p', { class: 'muted' }, 'Chưa có thao tác nào.'));
   for (const b of batches) {
     const ops = h('div');
     let open = false;
-    const canUndo = ['classify', 'manual', 'tagmap', 'balance', 'folder_delete'].includes(b.kind) && !b.undone_at && b.done;
+    const canUndo = ['classify', 'manual', 'tagmap', 'balance', 'folder_delete', 'flatten', 'other_out'].includes(b.kind) && !b.undone_at && b.done;
     host.append(h('div', { class: 'group' },
       h('div', { class: 'group-head' },
         h('button', { class: 'btn small', 'aria-expanded': 'false', onclick: async (e) => {
@@ -1830,14 +2006,12 @@ function renderSettings() {
     field('Thư mục hộp thư đến', h('input', { type: 'text', value: c.inbox_name, onchange: (e) => { c.inbox_name = e.target.value.trim() || 'Chưa phân loại'; } }), 'Tên thư mục con trong thư viện chứa sách mới. Thư mục này không bao giờ là đích phân loại.'),
     field('Bỏ qua thư mục', h('input', { type: 'text', value: c.exclude_names.join('; '), onchange: (e) => { c.exclude_names = e.target.value.split(';').map((s) => s.trim()).filter(Boolean); } }), 'Phân cách bằng dấu ;'),
     field('Chế độ chỉ đọc', chk('read_only', 'Không xoá, không di chuyển file nào'), 'Bật khi thử trên kho thật để đối chiếu kết quả trước.'),
-    field('Quét ngầm', chk('auto_clean_exact_in_background', 'Tự dọn trùng chắc chắn khi quét ngầm', (e) => {
-      if (e.target.checked) modal({ title: 'Bật tự dọn trùng?', body: 'Tác vụ ngầm sẽ tự đưa bản trùng chắc chắn (SHA-256) vào Thùng rác mà không hỏi. Mặc định tắt.', ok: 'Đã hiểu', cancel: 'Tắt lại' })
-        .then((ok) => { if (!ok) { c.auto_clean_exact_in_background = false; e.target.checked = false; } });
-    }), 'Mặc định tắt: quét ngầm chỉ lập danh sách.'),
     field('Tự phân loại hộp thư đến', chk('auto_triage', 'Mỗi lần quét, tự xếp sách vào thể loại', (e) => {
       if (e.target.checked) modal({ title: 'Bật tự phân loại?', body: 'Mỗi lần quét, sách trong hộp thư đến (kể cả thư mục kiểu Calibre) sẽ được đọc tag, chuyển vào thư mục thể loại — tạo thư mục mới nếu cần, sách chưa chắc vào “Khác” — rồi mọi file không phải sách (ảnh, âm thanh, video, .opf…) và thư mục con thừa được đưa vào Thùng rác. Truyện tranh và file .zip/.rar được giữ nguyên. Nhật ký di chuyển: triage-journal.jsonl trong thư mục dữ liệu app.', ok: 'Đã hiểu', cancel: 'Tắt lại' })
         .then((ok) => { if (!ok) { c.auto_triage = false; e.target.checked = false; } });
     }), 'Mặc định bật. Xem trước bằng lệnh: librarian triage.'),
+    field('Thư mục con', chk('flatten_subfolders', 'Mỗi lần quét, đưa sách trong thư mục con lạ ra thư mục thể loại'),
+      'Mặc định bật (cần bật Tự phân loại). Chỉ giữ thư mục con bạn tạo bằng app (chuột phải lên thể loại → Thêm thư mục con; gõ đúng tên một thư mục có sẵn để giữ nó) và đích của Tag → thể loại. Thư mục con chép theo từ nguồn được làm phẳng: tên file chung chung như “Tập 3” thành “One Piece - Tập 3”, trùng tên thêm (1); thư mục đã hết sách vào Thùng rác. Lô “Làm phẳng thư mục con” hoàn tác được ở Hoạt động.'),
     field('Sách đã xoá', chk('auto_reject_deleted', 'Tải lại đúng cuốn đã xoá thì tự đưa vào Thùng rác'),
       'Mặc định bật. App nhớ dung lượng + mã băm của sách bạn đã xoá (kể cả sau khi dọn sạch Thùng rác Windows). Bản y hệt tải về lần sau bị loại khi quét; bản gần giống hiện ở “Nghi trùng” để bạn duyệt. Khôi phục từ Thùng rác thì app thôi nhớ cuốn đó.'),
     field('Thư mục thể loại', h('button', { class: 'btn', onclick: () => openFolderManager() }, 'Quản lý thư mục…'),
@@ -1848,7 +2022,6 @@ function renderSettings() {
         : [h('div', { class: 'muted small' }, 'Chưa chặn thể loại nào.')]),
       h('button', { class: 'btn', style: 'margin-top:6px', onclick: () => openBlockPicker() }, 'Chặn thư mục…')),
       'Sách trong thư mục bị chặn vào Thùng rác; sách mới tự phân loại vào đó cũng vào thẳng Thùng rác, thư mục không được tạo lại. Chặn được cả thư mục con bạn tự chia (vd. “Ngôn tình - Đam mỹ › Đam mỹ”). Cũng mở được bằng chuột phải lên thể loại ở thanh bên.'),
-    field('Giờ quét ngầm', h('input', { type: 'text', value: c.scan_time, onchange: (e) => { c.scan_time = e.target.value; } }), 'HH:MM – đăng ký Task Scheduler sẽ có ở M6.'),
     field('Ngưỡng tin cậy cao', num('classify_high', 1, 100), 'Đề xuất từ mức này trở lên được tick sẵn.'),
     field('Ngưỡng trung bình', num('classify_medium', 1, 100), 'Dưới mức này: đưa vào “Cần làm tay”.'),
     field('Số luồng băm', num('hash_threads', 1, 16), 'SSD ngoài: 2–4.'),

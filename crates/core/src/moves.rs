@@ -7,8 +7,15 @@ use crate::error::{Error, Result};
 use crate::scan;
 use rusqlite::{params, Connection};
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// Ghi DB sau mỗi chừng này file đã chuyển…
+const COMMIT_EVERY_FILES: usize = 64;
+/// …hoặc sau chừng này thời gian.
+const COMMIT_EVERY: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone)]
 pub struct MoveRequest {
@@ -198,6 +205,8 @@ pub struct MoveOptions<'a> {
     pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
     /// Tiến trình (`phase = "move"`, x / y file).
     pub progress: Option<crate::OnStep<'a>>,
+    /// Tên file mới cho một số cuốn (mã sách → tên), vd. khi làm phẳng thư mục con (`subcats.rs`).
+    pub names: Option<&'a HashMap<i64, String>>,
 }
 
 /// Áp dụng một lô di chuyển (sau khi người dùng bấm "Áp dụng" ở màn xem trước).
@@ -226,6 +235,18 @@ pub fn apply_moves_with(
             f(crate::Step { phase: "move", done, total: reqs.len() });
         }
     };
+    // Mỗi cuốn trước đây phải đọc lại thư mục thư viện / thư mục đích (tìm đúng tên thật trên ổ) và mọi ngăn của
+    // `Khác`: với ổ USB / ổ mạng (vài ms mỗi lần hỏi đĩa) và hàng nghìn cuốn là rất chậm. Kết quả giống nhau cho mọi
+    // cuốn cùng ổ, cùng đích → nhớ lại.
+    let mut placed: HashMap<(Option<usize>, PathBuf), PathBuf> = HashMap::new();
+    let mut made_dirs: HashSet<PathBuf> = HashSet::new();
+    let mut shelves: HashMap<PathBuf, crate::triage::Shelves> = HashMap::new();
+    let roots: Vec<(i64, PathBuf, String)> = scan::all_roots(conn)?;
+    // Ghi DB theo lô nhỏ (một giao dịch cho vài chục file) thay vì một giao dịch mỗi file. File đã chuyển mà chưa kịp
+    // ghi (mất điện đúng lúc) được lần quét sau nhận lại theo băm, không mất sách.
+    let mut tx: Option<rusqlite::Transaction> = None;
+    let mut pending = 0usize;
+    let mut since = std::time::Instant::now();
     step(0);
     for (i, r) in reqs.iter().enumerate() {
         if opts.cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
@@ -234,6 +255,12 @@ pub fn apply_moves_with(
         }
         if i > 0 {
             step(i);
+        }
+        if pending > 0 && (pending >= COMMIT_EVERY_FILES || since.elapsed() >= COMMIT_EVERY) {
+            if let Some(t) = tx.take() {
+                t.commit()?;
+            }
+            pending = 0;
         }
         let Some(b) = db::get_book(conn, r.book_id)? else { continue };
         let fail = |rep: &mut MoveReport, msg: String| -> Result<()> {
@@ -246,13 +273,19 @@ pub fn apply_moves_with(
             continue;
         };
         let src = PathBuf::from(&b.path);
-        let target_dir =
-            if opts.exact { r.target_dir.clone() } else { placer.place(&src, b.size.max(0) as u64, &r.target_dir) };
+        let target_dir = if opts.exact {
+            r.target_dir.clone()
+        } else {
+            // Sách nằm trong một thư mục thư viện: đích chỉ phụ thuộc thư mục đó (xem `Placer::place_rel`).
+            match placer.root_index(&src) {
+                Some(h) => placed
+                    .entry((Some(h), r.target_dir.clone()))
+                    .or_insert_with(|| placer.place(&src, b.size.max(0) as u64, &r.target_dir))
+                    .clone(),
+                None => placer.place(&src, b.size.max(0) as u64, &r.target_dir),
+            }
+        };
         let lib = cfg.library_root_of(&target_dir).unwrap_or(lib);
-        if !lib.is_dir() {
-            fail(&mut rep, format!("Ổ thư viện chưa kết nối: {}", lib.display()))?;
-            continue;
-        }
         // Chuyển vào `Khác` → vào thẳng ngăn của chữ cái đầu (`Khác\T\T-01\…`), không làm phẳng lại `Khác`.
         let into_other = target_dir.parent() == Some(lib.as_path())
             && target_dir.file_name().is_some_and(|n| crate::triage::is_other_dir(&n.to_string_lossy()));
@@ -270,17 +303,23 @@ pub fn apply_moves_with(
         } else if src.parent() == Some(target_dir.as_path()) {
             continue; // đã ở đúng chỗ
         }
-        if !src.is_file() {
-            fail(&mut rep, "File nguồn không còn tồn tại".into())?;
-            continue;
+        if !made_dirs.contains(&target_dir) {
+            if !lib.is_dir() {
+                fail(&mut rep, format!("Ổ thư viện chưa kết nối: {}", lib.display()))?;
+                continue;
+            }
+            if let Err(e) = std::fs::create_dir_all(&target_dir) {
+                fail(&mut rep, format!("Không tạo được thư mục {}: {e}", target_dir.display()))?;
+                continue;
+            }
+            made_dirs.insert(target_dir.clone());
         }
         crate::progress::working_on(&src);
-        if let Err(e) = std::fs::create_dir_all(&target_dir) {
-            fail(&mut rep, format!("Không tạo được thư mục {}: {e}", target_dir.display()))?;
-            continue;
-        }
         let target = if into_other {
-            match crate::triage::Shelves::new(&target_dir, false).dir_for(&b.file_name) {
+            let sh = shelves
+                .entry(target_dir.clone())
+                .or_insert_with(|| crate::triage::Shelves::new(&target_dir, false));
+            match sh.dir_for(&b.file_name) {
                 Ok(d) => d,
                 Err(e) => {
                     fail(&mut rep, format!("Không tạo được ngăn trong {}: {e}", target_dir.display()))?;
@@ -290,21 +329,28 @@ pub fn apply_moves_with(
         } else {
             target_dir.clone()
         };
-        let dst = unique_dest(&target, &b.file_name);
+        let name = opts.names.and_then(|m| m.get(&b.id)).unwrap_or(&b.file_name);
+        let dst = unique_dest(&target, name);
         match move_file(&src, &dst) {
             Ok(()) => {
-                let tx = crate::db::write_tx(conn)?;
-                scan::relocate(&tx, cfg, b.id, &dst)?;
+                if tx.is_none() {
+                    tx = Some(crate::db::write_tx(conn)?);
+                    since = std::time::Instant::now();
+                }
+                let t = tx.as_ref().expect("vừa mở");
+                scan::relocate_in(t, cfg, &roots, b.id, &dst)?;
                 if let Ok(m) = std::fs::metadata(&dst) {
                     let mt = m.modified().map(mtime_ms).unwrap_or(b.mtime);
-                    tx.execute(
-                        "UPDATE books SET mtime = ?2, hash_mtime = CASE WHEN hash_mtime = ?3 THEN ?2 ELSE hash_mtime END
-                         WHERE id = ?1",
-                        params![b.id, mt, b.mtime],
-                    )?;
+                    if mt != b.mtime {
+                        t.prepare_cached(
+                            "UPDATE books SET mtime = ?2, hash_mtime = CASE WHEN hash_mtime = ?3 THEN ?2 ELSE hash_mtime END
+                             WHERE id = ?1",
+                        )?
+                        .execute(params![b.id, mt, b.mtime])?;
+                    }
                 }
                 db::log_op(
-                    &tx,
+                    t,
                     batch,
                     "move",
                     Some(b.id),
@@ -314,7 +360,7 @@ pub fn apply_moves_with(
                     "done",
                     None,
                 )?;
-                tx.commit()?;
+                pending += 1;
                 rep.moved.push(MoveDone {
                     book_id: b.id,
                     from: b.path.clone(),
@@ -323,6 +369,9 @@ pub fn apply_moves_with(
             }
             Err(e) => fail(&mut rep, format!("Không di chuyển được: {e}"))?,
         }
+    }
+    if let Some(t) = tx.take() {
+        t.commit()?;
     }
     if !rep.cancelled {
         step(reqs.len());
@@ -398,6 +447,11 @@ pub fn undo_batch_with(
     let (kind, undone): (String, Option<i64>) = conn
         .query_row("SELECT kind, undone_at FROM batches WHERE id = ?1", [batch_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|_| Error::msg(format!("Không có lô #{batch_id}")))?;
+    if kind == crate::metaedit::KIND {
+        return Err(Error::msg(
+            "Sửa thông tin sách không hoàn tác theo lô – hãy sửa lại (nếu đã ghi vào file, bản gốc nằm trong Thùng rác)",
+        ));
+    }
     if kind == "retitle" {
         return Err(Error::msg(
             "Sửa tiêu đề không hoàn tác theo lô – hãy sửa lại tiêu đề cũ (nếu đã ghi vào nội dung sách, bản gốc nằm trong Thùng rác Windows)",
@@ -428,14 +482,27 @@ pub fn undo_batch_with(
             f(crate::Step { phase: "move", done, total });
         }
     };
+    let roots = scan::all_roots(conn)?;
+    let mut tx: Option<rusqlite::Transaction> = None;
+    let mut pending = 0usize;
+    let mut since = std::time::Instant::now();
     step(0);
     for (i, (op_id, book_id, src, dst)) in ops.into_iter().enumerate() {
         if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
             rep.cancelled = true;
+            if let Some(t) = tx.take() {
+                t.commit()?;
+            }
             return Ok(rep);
         }
         if i > 0 {
             step(i);
+        }
+        if pending > 0 && (pending >= COMMIT_EVERY_FILES || since.elapsed() >= COMMIT_EVERY) {
+            if let Some(t) = tx.take() {
+                t.commit()?;
+            }
+            pending = 0;
         }
         crate::progress::working_on(Path::new(&dst));
         let (srcp, dstp) = (PathBuf::from(&src), PathBuf::from(&dst));
@@ -460,16 +527,23 @@ pub fn undo_batch_with(
         }
         match move_file(&dstp, &srcp) {
             Ok(()) => {
-                let tx = crate::db::write_tx(conn)?;
-                if let Some(id) = book_id {
-                    scan::relocate(&tx, cfg, id, &srcp)?;
+                if tx.is_none() {
+                    tx = Some(crate::db::write_tx(conn)?);
+                    since = std::time::Instant::now();
                 }
-                tx.execute("UPDATE operations SET status='undone' WHERE id=?1", [op_id])?;
-                tx.commit()?;
+                let t = tx.as_ref().expect("vừa mở");
+                if let Some(id) = book_id {
+                    scan::relocate_in(t, cfg, &roots, id, &srcp)?;
+                }
+                t.prepare_cached("UPDATE operations SET status='undone' WHERE id=?1")?.execute([op_id])?;
+                pending += 1;
                 rep.restored += 1;
             }
             Err(e) => fail(&mut rep, format!("Không trả về được: {e}"))?,
         }
+    }
+    if let Some(t) = tx.take() {
+        t.commit()?;
     }
     step(total);
     conn.execute("UPDATE batches SET undone_at = ?2 WHERE id = ?1", params![batch_id, now()])?;

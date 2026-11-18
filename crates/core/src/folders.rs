@@ -90,7 +90,10 @@ fn dirs_of(cfg: &Config, rel: &str) -> Vec<(PathBuf, PathBuf)> {
 
 /// Thêm thư mục `name` vào `parent` (`None` = thể loại mới ở cấp 1). Thư mục cha có ở nhiều ổ thì tạo ở ổ đầu tiên có
 /// nó (thư mục chính trước); thể loại mới tạo ở thư mục thư viện chính. Trả về đường dẫn tương đối mới.
-pub fn create(cfg: &Config, parent: Option<&str>, name: &str) -> Result<String> {
+///
+/// Thư mục con được ghi vào danh sách thư mục con do app quản lý (`subcats.rs`) – người gọi lưu cấu hình. Đã có
+/// một thư mục con cùng tên mà app chưa quản lý (chép theo từ nguồn) thì app nhận luôn thư mục đó (giữ lại khi quét).
+pub fn create(cfg: &mut Config, parent: Option<&str>, name: &str) -> Result<String> {
     if cfg.read_only {
         return Err(Error::ReadOnly);
     }
@@ -115,10 +118,23 @@ pub fn create(cfg: &Config, parent: Option<&str>, name: &str) -> Result<String> 
             (root, name.clone())
         }
     };
-    if dirs_of(cfg, &rel).iter().any(|(_, d)| d.is_dir()) {
+    let is_sub = parent.is_some_and(|p| !p.trim().is_empty());
+    if let Some((root, d)) = dirs_of(cfg, &rel).into_iter().find(|(_, d)| d.is_dir()) {
+        if is_sub && !crate::subcats::is_registered(cfg, &rel) {
+            let real: Vec<String> = d
+                .strip_prefix(&root)
+                .map(|r| r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect())
+                .unwrap_or_default();
+            let rel = if real.is_empty() { rel } else { real.join("/") };
+            crate::subcats::register(cfg, &rel);
+            return Ok(rel);
+        }
         return Err(Error::msg(format!("Đã có thư mục “{}”", rel.replace('/', " › "))));
     }
     std::fs::create_dir(base.join(&name)).map_err(|e| Error::msg(format!("Không tạo được thư mục: {e}")))?;
+    if is_sub {
+        crate::subcats::register(cfg, &rel);
+    }
     Ok(rel)
 }
 
@@ -217,6 +233,11 @@ pub fn rename(conn: &Connection, cfg: &mut Config, rel: &str, new_name: &str) ->
                 t.target = n;
             }
         }
+        for r in cfg.subcategories.iter_mut() {
+            if let Some(n) = rebase(r, &old_keys, &new_parts) {
+                *r = n;
+            }
+        }
     }
     Ok(rep)
 }
@@ -242,6 +263,7 @@ pub fn forget(cfg: &mut Config, rel: &str) -> Result<()> {
     };
     cfg.blocked_categories.retain(|r| !inside(r));
     cfg.tag_map.retain(|t| !inside(&t.target));
+    cfg.subcategories.retain(|r| !inside(r));
     Ok(())
 }
 
@@ -274,7 +296,7 @@ pub fn delete(
         }
     }
     if !reqs.is_empty() {
-        let opts = MoveOptions { exact: true, cancel, progress: on };
+        let opts = MoveOptions { exact: true, cancel, progress: on, names: None };
         rep.moves = moves::apply_moves_with(conn, cfg, &reqs, DELETE_KIND, &opts)?;
         rep.cancelled = rep.moves.cancelled;
     }

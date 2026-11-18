@@ -52,6 +52,7 @@ fn setup() -> Env {
     lib.set_library_root(&d).unwrap();
     lib.add_library_root(&g).unwrap();
     lib.config.min_free_gb = 0; // ổ test dùng chung một đĩa: không ổ nào "sắp đầy"
+    lib.config.subcategories = vec!["Văn học/Nguyễn Nhật Ánh".into()];
     let e = Env { _tmp: tmp, d, g, lib };
     analyze(&e);
     e
@@ -129,7 +130,8 @@ fn a_full_drive_never_triggers_automatic_cross_drive_moves() {
 
 #[test]
 fn balance_moves_whole_folders_to_the_other_drive_and_can_be_undone() {
-    let e = setup();
+    let mut e = setup();
+    e.lib.config.subcategories.push("Văn học/Bộ X".into());
     epub(&e.d.join("Văn học").join("Bộ X").join("X1.epub"), "X1", &[]);
     epub(&e.d.join("Văn học").join("Bộ X").join("X2.epub"), "X2", &[]);
     analyze(&e);
