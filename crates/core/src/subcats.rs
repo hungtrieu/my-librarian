@@ -418,7 +418,9 @@ mod tests {
     fn keep_len_finds_the_deepest_managed_folder() {
         let cfg = Config {
             subcategories: vec!["Văn học/Nước ngoài".into()],
-            tag_map: vec![crate::config::TagRule { tag: "x".into(), target: "Ngôn tình/Đam mỹ/Hiện đại".into() }],
+            tag_map: vec![crate::config::TagRule {
+                tag: "x".into(), target: "Ngôn tình/Đam mỹ/Hiện đại".into()
+            }],
             ..Config::default()
         };
         let s = SubCats::new(&cfg);

@@ -11,7 +11,6 @@ use librarian_core::classify::{self, Proposal};
 use librarian_core::covers::CoverCache;
 use librarian_core::dedupe::{self, Decision, ExactGroup, SuspectGroup};
 use librarian_core::folders;
-use librarian_core::similar;
 use librarian_core::formats::Format;
 use librarian_core::moves::{self, BatchInfo, MoveReport, MoveRequest, Operation, UndoReport};
 use librarian_core::progress::{self, Watchdog};
@@ -19,6 +18,7 @@ use librarian_core::reader::{self, ComicSource, ReaderInfo};
 use librarian_core::report::{self, ReportStats};
 use librarian_core::retitle::{self, RetitleOptions, RetitleReport};
 use librarian_core::scan::ScanProgress;
+use librarian_core::similar;
 use librarian_core::tagmap;
 use librarian_core::trash::{self, SystemTrasher, TrashReport};
 use librarian_core::volumes;
@@ -894,7 +894,7 @@ fn start_clean_exact(
     })
 }
 
-/// Tự dọn nghi trùng có độ tin cậy ≥ `dedupe::AUTO_SUSPECT_CONFIDENCE`: tính lại nhóm (bước `suspect_hash`) rồi
+/// Tự dọn nghi trùng có độ tin cậy ≥ ngưỡng trong Cài đặt (`Config::suspect_auto`, mặc định 85%): tính lại nhóm (bước `suspect_hash`) rồi
 /// giữ bản đề xuất, đưa bản còn lại vào Thùng rác (bước `trash`). Cùng sự kiện / giám sát treo / dừng như
 /// [`start_clean_exact`].
 #[tauri::command]
@@ -909,7 +909,7 @@ fn start_clean_suspects(app: AppHandle, state: State<'_, AppState>) -> CmdResult
             &lib.config,
             &SystemTrasher,
             &groups,
-            dedupe::AUTO_SUSPECT_CONFIDENCE,
+            lib.config.suspect_auto_threshold(),
             Some(cancel),
             Some(on),
         )

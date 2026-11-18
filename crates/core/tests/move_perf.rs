@@ -31,7 +31,8 @@ fn move_many_books_between_categories() {
     report::run_analysis(&lib.conn, &lib.config, "app", None, Some(&NoTrash)).unwrap();
     eprintln!("analysis {n} sách: {:?}", t.elapsed());
     let ids: Vec<(i64, String)> = {
-        let mut st = lib.conn.prepare("SELECT id, category FROM books WHERE status='present' AND category = 'Văn học'").unwrap();
+        let mut st =
+            lib.conn.prepare("SELECT id, category FROM books WHERE status='present' AND category = 'Văn học'").unwrap();
         let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().flatten().collect();
         v
     };

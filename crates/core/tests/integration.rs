@@ -550,6 +550,23 @@ fn config_roundtrip_defaults() {
 }
 
 #[test]
+fn suspect_auto_threshold_is_configurable_and_clamped() {
+    let tmp = tempfile::tempdir().unwrap();
+    // File cấu hình cũ (không có khoá) → mặc định 85.
+    std::fs::write(tmp.path().join("config.json"), r#"{"read_only": false}"#).unwrap();
+    let mut c = Config::load(tmp.path()).unwrap();
+    assert_eq!(c.suspect_auto_threshold(), dedupe::AUTO_SUSPECT_CONFIDENCE);
+    c.suspect_auto = 95;
+    c.save(tmp.path()).unwrap();
+    let c = Config::load(tmp.path()).unwrap();
+    assert_eq!(c.suspect_auto_threshold(), 95);
+    let low = Config { suspect_auto: 0, ..c.clone() };
+    assert_eq!(low.suspect_auto_threshold(), dedupe::MIN_SUSPECT_AUTO);
+    let high = Config { suspect_auto: 200, ..c };
+    assert_eq!(high.suspect_auto_threshold(), 100);
+}
+
+#[test]
 fn covers_extracted_and_cached() {
     use librarian_core::covers::CoverCache;
     use librarian_core::formats::Format;

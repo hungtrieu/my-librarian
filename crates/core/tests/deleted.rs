@@ -171,14 +171,39 @@ fn similar_redownload_goes_to_suspects_with_a_deleted_member() {
     assert_eq!(ghost.status, "deleted");
     assert!(g.keeper_id > 0, "bản đề xuất giữ luôn là sách đang có");
 
-    // Không tự dọn dù độ tin cậy cao.
-    let r = dedupe::clean_suspects_with(&e.lib.conn, &e.lib.config, &e.trash, &groups, 0, None, None).unwrap();
-    assert_eq!(r.trashed, 0);
-    assert!(other.is_file());
-
     // "Giữ tất cả" ghi nhớ được cả với mục đã xoá → không hiện lại.
     let ids: Vec<i64> = g.members.iter().map(|b| b.id).collect();
     assert!(dedupe::decide(&e.lib.conn, &ids, Decision::KeepBoth).unwrap() > 0);
+    assert!(dedupe::suspect_groups(&e.lib.conn).unwrap().is_empty());
+}
+
+#[test]
+fn auto_clean_handles_groups_with_a_deleted_member() {
+    let e = setup();
+    let id = id_of(&e, "Mắt Biếc.epub");
+    trash::trash_books(&e.lib.conn, &e.lib.config, &e.trash, &[id]).unwrap();
+    backdate(&e);
+    // Tải lại hai ấn bản khác của cuốn đã xoá: nhóm = mục đã xoá + 2 sách đang có.
+    let dir = e.books.join("Khác").join("M").join("M-01");
+    let big = dir.join("Mắt Biếc (bản đẹp).epub");
+    let small = dir.join("Mắt Biếc (bản thường).epub");
+    epub(&big, "Mắt Biếc", "một ấn bản khác hẳn, dài hơn nhiều so với bản cũ đã xoá, thêm thật nhiều chữ nữa cho dày");
+    epub(&small, "Mắt Biếc", "ấn bản ngắn");
+    analyze(&e);
+    let groups = dedupe::suspect_groups(&e.lib.conn).unwrap();
+    assert_eq!(groups.len(), 1);
+    let g = &groups[0];
+    assert!(g.has_deleted);
+    assert_eq!(g.members.len(), 3);
+    let keeper = g.members.iter().find(|b| b.id == g.keeper_id).unwrap().path.clone();
+
+    // Tự dọn như mọi nhóm đủ tin cậy: giữ bản đề xuất, xoá bản còn lại, mục đã xoá không làm hỏng lô.
+    let r = dedupe::clean_suspects_with(&e.lib.conn, &e.lib.config, &e.trash, &groups, 0, None, None).unwrap();
+    assert_eq!(r.trashed, 1);
+    assert!(r.failures.is_empty(), "{:?}", r.failures);
+    assert!(std::path::Path::new(&keeper).is_file());
+    assert_eq!([&big, &small].iter().filter(|p| p.is_file()).count(), 1);
+    // Bản giữ được ghi "Giữ tất cả" với mục đã xoá → không hiện lại trong Nghi trùng.
     assert!(dedupe::suspect_groups(&e.lib.conn).unwrap().is_empty());
 }
 

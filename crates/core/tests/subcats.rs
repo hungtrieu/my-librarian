@@ -82,7 +82,11 @@ fn scan_flattens_unmanaged_subfolders_and_can_be_undone() {
     assert_eq!(path_of(&e, "Một"), vh.join("NNA - Bộ 1 - 01.epub"), "tên chung chung: thêm tên thư mục");
     assert_eq!(path_of(&e, "A2"), vh.join("Áo trắng (1).epub"), "trùng tên thêm (1)");
     assert_eq!(path_of(&e, "C"), vh.join("Nước ngoài").join("Cánh đồng.epub"), "thư mục con do app quản lý giữ nguyên");
-    assert_eq!(path_of(&e, "D"), vh.join("Nước ngoài").join("Rừng Na Uy.epub"), "thư mục lạ bên trong thư mục được quản lý");
+    assert_eq!(
+        path_of(&e, "D"),
+        vh.join("Nước ngoài").join("Rừng Na Uy.epub"),
+        "thư mục lạ bên trong thư mục được quản lý"
+    );
     assert!(vh.join("Ghi chép.docx").is_file(), "file sách app chưa đọc được cũng được đưa ra");
     assert!(!vh.join("NNA").exists() && !vh.join("Khác nữa").exists(), "thư mục lạ hết sách vào Thùng rác");
     assert!(!vh.join("Nước ngoài").join("Murakami").exists());

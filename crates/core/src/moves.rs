@@ -316,9 +316,8 @@ pub fn apply_moves_with(
         }
         crate::progress::working_on(&src);
         let target = if into_other {
-            let sh = shelves
-                .entry(target_dir.clone())
-                .or_insert_with(|| crate::triage::Shelves::new(&target_dir, false));
+            let sh =
+                shelves.entry(target_dir.clone()).or_insert_with(|| crate::triage::Shelves::new(&target_dir, false));
             match sh.dir_for(&b.file_name) {
                 Ok(d) => d,
                 Err(e) => {

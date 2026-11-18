@@ -135,8 +135,7 @@ pub fn run_analysis_with(
     let mut st = ReportStats { scan: summary.clone(), auto_triaged, ..Default::default() };
     // Thư mục bị chặn còn sách trên đĩa (lần chặn trước dừng giữa chừng, hoặc thư mục được tạo lại bằng tay): dọn tiếp.
     if !summary.cancelled && !cfg.read_only && !cfg.blocked_categories.is_empty() {
-        let r =
-            crate::blocked::enforce(conn, cfg, trasher.unwrap_or(&crate::trash::SystemTrasher), None, cancel, on)?;
+        let r = crate::blocked::enforce(conn, cfg, trasher.unwrap_or(&crate::trash::SystemTrasher), None, cancel, on)?;
         if r.trashed > 0 || !r.failures.is_empty() {
             tracing::info!("thể loại bị chặn: {} sách vào Thùng rác, {} lỗi", r.trashed, r.failures.len());
         }
@@ -195,8 +194,7 @@ pub fn run_analysis_with(
     }
     // Sách đã xoá trước đây mà lại được tải về (nội dung y hệt): đưa thẳng vào Thùng rác, trước khi băm / tìm trùng.
     if !st.scan.cancelled && cfg.auto_reject_deleted && !cfg.read_only {
-        let r =
-            crate::deleted::reject_known(conn, cfg, trasher.unwrap_or(&crate::trash::SystemTrasher), cancel, on)?;
+        let r = crate::deleted::reject_known(conn, cfg, trasher.unwrap_or(&crate::trash::SystemTrasher), cancel, on)?;
         if r.trash.trashed > 0 || !r.trash.failures.is_empty() {
             tracing::info!(
                 "loại sách đã xoá trước đây: {} vào Thùng rác, {} lỗi",
@@ -289,8 +287,7 @@ pub fn refresh_counts(conn: &Connection, cfg: &Config) -> Result<()> {
 /// loại" có thể đổi, và chỉ khi lô có sách ra / vào hộp thư đến. Rẻ hơn hẳn [`refresh_counts`] (với thư viện vài
 /// chục nghìn cuốn, tính lại nghi trùng + đề xuất mất hàng trăm ms tới vài giây sau mỗi lần kéo thả).
 pub fn refresh_after_moves(conn: &Connection, cfg: &Config, moved: &[crate::moves::MoveDone]) -> Result<()> {
-    let inboxes: Vec<std::path::PathBuf> =
-        cfg.library_roots().into_iter().map(|r| r.join(&cfg.inbox_name)).collect();
+    let inboxes: Vec<std::path::PathBuf> = cfg.library_roots().into_iter().map(|r| r.join(&cfg.inbox_name)).collect();
     let touches = |p: &str| {
         let f = crate::normalize::fold(p);
         inboxes.iter().any(|i| f.starts_with(&crate::normalize::fold(&i.to_string_lossy())))

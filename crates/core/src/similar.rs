@@ -38,7 +38,11 @@ pub fn name_parts(stem: &str) -> Vec<String> {
     for sep in SEPARATORS {
         parts = parts.iter().flat_map(|p| p.split(sep).map(str::to_string).collect::<Vec<_>>()).collect();
     }
-    parts.into_iter().map(|p| p.trim().trim_matches(['-', '_', '.', ',']).trim().to_string()).filter(|p| !p.is_empty()).collect()
+    parts
+        .into_iter()
+        .map(|p| p.trim().trim_matches(['-', '_', '.', ',']).trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
 }
 
 /// Một phần tên file đủ "riêng" để so (≥ 2 từ có chữ, hoặc một từ ≥ 6 chữ cái; không phải số / tập).
@@ -49,7 +53,8 @@ fn distinctive(key: &str) -> bool {
 /// Như [`distinctive`], một từ đơn cần ít nhất `min` chữ (tên bộ một từ như `Conan`, `Naruto` dùng 4).
 fn distinctive_min(key: &str, min: usize) -> bool {
     let words: Vec<&str> = key.split(' ').filter(|w| !w.is_empty() && !w.chars().all(|c| c.is_ascii_digit())).collect();
-    !crate::subcats::is_generic_stem(key) && (words.len() >= 2 || words.first().is_some_and(|w| w.chars().count() >= min))
+    !crate::subcats::is_generic_stem(key)
+        && (words.len() >= 2 || words.first().is_some_and(|w| w.chars().count() >= min))
 }
 
 /// Tác giả đoán từ tên file: phần tên trùng (sau chuẩn hoá) một tác giả đã biết. `known`: khoá `normalize_author`.
@@ -71,7 +76,8 @@ pub fn author_key(b: &Book, known: &HashSet<String>) -> Option<String> {
 
 /// Mọi tác giả (khoá) có trong thư viện – để nhận ra tên tác giả trong tên file.
 pub fn known_authors(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
-    let mut st = conn.prepare("SELECT DISTINCT norm_author FROM books WHERE status = 'present' AND norm_author <> ''")?;
+    let mut st =
+        conn.prepare("SELECT DISTINCT norm_author FROM books WHERE status = 'present' AND norm_author <> ''")?;
     let v = st
         .query_map([], |r| r.get::<_, String>(0))?
         .filter_map(|r| r.ok())
@@ -220,9 +226,10 @@ pub fn suggestions(conn: &rusqlite::Connection, cfg: &Config, moved: &[(i64, Str
         }
         let series = series_key(&b);
         if let Some(s) = &series {
-            let label = b.series.clone().unwrap_or_else(|| {
-                name_parts(b.stem()).into_iter().next().unwrap_or_else(|| b.title.clone())
-            });
+            let label = b
+                .series
+                .clone()
+                .unwrap_or_else(|| name_parts(b.stem()).into_iter().next().unwrap_or_else(|| b.title.clone()));
             add(Criterion { kind: "series".into(), key: s.clone(), label });
         }
         for p in name_parts(b.stem()) {
@@ -245,7 +252,8 @@ pub fn suggestions(conn: &rusqlite::Connection, cfg: &Config, moved: &[(i64, Str
         let mut list: Vec<CriterionCount> = crits
             .into_iter()
             .map(|c| {
-                let hits: Vec<&OtherBook> = other.iter().filter(|o| !ids.contains(&o.book.id) && c.matches(o)).collect();
+                let hits: Vec<&OtherBook> =
+                    other.iter().filter(|o| !ids.contains(&o.book.id) && c.matches(o)).collect();
                 CriterionCount {
                     books: hits.len(),
                     samples: hits.iter().take(5).map(|o| o.book.title.clone()).collect(),
@@ -264,9 +272,7 @@ pub fn suggestions(conn: &rusqlite::Connection, cfg: &Config, moved: &[(i64, Str
             "tag" => 2,
             _ => 3,
         };
-        list.sort_by(|a, b| {
-            rank(&a.criterion.kind).cmp(&rank(&b.criterion.kind)).then_with(|| b.books.cmp(&a.books))
-        });
+        list.sort_by(|a, b| rank(&a.criterion.kind).cmp(&rank(&b.criterion.kind)).then_with(|| b.books.cmp(&a.books)));
         list.truncate(MAX_CRITERIA);
         let books =
             other.iter().filter(|o| !ids.contains(&o.book.id) && list.iter().any(|c| c.criterion.matches(o))).count();
@@ -338,8 +344,11 @@ pub struct OtherView {
     pub groups: Vec<OtherGroup>,
 }
 
+/// Một dự đoán: (chỉ số trong `other`, chỉ số thể loại, độ tin cậy, lý do).
+type Guess = (usize, usize, u8, String);
+
 /// Đoán thể loại cho mọi sách trong `Khác` (không đụng tới đĩa). Chỉ giữ dự đoán ≥ `min_conf`.
-fn guesses(conn: &rusqlite::Connection, cfg: &Config, min_conf: u8) -> Result<(Model, Vec<OtherBook>, Vec<(usize, usize, u8, String)>)> {
+fn guesses(conn: &rusqlite::Connection, cfg: &Config, min_conf: u8) -> Result<(Model, Vec<OtherBook>, Vec<Guess>)> {
     let known = known_authors(conn)?;
     let model = Model::build_excluding_other(conn, cfg, &known)?;
     let other = other_books(conn, cfg, &known)?;
@@ -366,7 +375,7 @@ pub fn other_view(conn: &rusqlite::Connection, cfg: &Config, min_conf: u8) -> Re
     let mut groups: Vec<OtherGroup> = by
         .into_iter()
         .map(|(c, mut v)| {
-            v.sort_by(|a, b| b.1.cmp(&a.1));
+            v.sort_by_key(|a| std::cmp::Reverse(a.1));
             OtherGroup {
                 target: model.categories[c].name.clone(),
                 books: v.len(),

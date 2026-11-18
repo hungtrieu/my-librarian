@@ -306,7 +306,7 @@ api.listen('scan-done', async (e) => {
 // Lõi gửi `clean-progress` ({ phase: 'trash' | 'refresh', done, total }), `clean-health` mỗi giây (giám sát treo)
 // và đúng một `clean-done`. Hộp này không đóng được bằng Esc / bấm ra ngoài – chỉ "Dừng" hoặc khi xong.
 const CL = { el: null, progress: null, health: null, stopping: false, kind: 'exact' };
-const CL_TITLE = { exact: 'Đang dọn trùng chắc chắn', suspects: 'Đang tự dọn nghi trùng ≥85%', block: 'Đang xoá sách trong thư mục bị chặn', balance: 'Đang chuyển sách sang ổ khác', undo: 'Đang trả sách về ổ cũ', tagmove: 'Đang chuyển sách cùng tag ra khỏi “Khác”', folderdel: 'Đang xoá thư mục', manualmove: 'Đang chuyển sách', otherclassify: 'Đang chuyển sách ra khỏi “Khác”' };
+const CL_TITLE = { exact: 'Đang dọn trùng chắc chắn', get suspects() { return `Đang tự dọn nghi trùng ≥${suspectAuto()}%`; }, block: 'Đang xoá sách trong thư mục bị chặn', balance: 'Đang chuyển sách sang ổ khác', undo: 'Đang trả sách về ổ cũ', tagmove: 'Đang chuyển sách cùng tag ra khỏi “Khác”', folderdel: 'Đang xoá thư mục', manualmove: 'Đang chuyển sách', otherclassify: 'Đang chuyển sách ra khỏi “Khác”' };
 const CL_NOTE = {
   balance: 'Mỗi file được chép vào file tạm ở ổ mới, so SHA-256 với bản gốc, đổi tên rồi mới xoá bản cũ – mất điện giữa chừng cũng không hỏng sách. Dừng giữa chừng an toàn: sách đã chuyển giữ nguyên ở ổ mới (hoàn tác được ở Hoạt động), phần còn lại ở ổ cũ.',
   tagmove: 'Sách ở lại ổ đang chứa nó (chỉ đổi tên, tức thì). Dừng giữa chừng an toàn: sách đã chuyển giữ nguyên, hoàn tác được ở Hoạt động.',
@@ -371,7 +371,7 @@ async function startClean(hashes, keep) {
 
 function closeCleanModal() { CL.el?.remove(); CL.el = null; }
 
-/** Tự dọn các nhóm nghi trùng có độ tin cậy ≥ 85% (giữ bản đề xuất, còn lại vào Thùng rác). */
+/** Tự dọn các nhóm nghi trùng có độ tin cậy ≥ ngưỡng trong Cài đặt (giữ bản đề xuất, còn lại vào Thùng rác). */
 async function startCleanSuspects() {
   CL.kind = 'suspects';
   openCleanModal();
@@ -881,6 +881,7 @@ function itemMenu(x, y, it) {
       it.continue_book_id ? { label: 'Đọc tiếp', run: () => read(it.continue_book_id) } : null,
       ...sendItems(),
       notWorthItem(n, true),
+      S.ov?.categories.length ? { label: n > 1 ? `Chuyển ${n} mục vào thư mục thể loại…` : `Chuyển cả bộ (${it.volumes} tập) vào thư mục thể loại…`, run: () => moveSelectionToCategory(it) } : null,
       '-', { label: n > 1 ? `Xoá ${n} mục vào Thùng rác…` : 'Xoá cả bộ vào Thùng rác…', danger: true, run: deleteSelection },
     ].filter(Boolean));
   }
@@ -1087,6 +1088,30 @@ async function moveSelection() {
   render();
 }
 
+/**
+ * Chọn một thư mục thể loại / thư mục con rồi chuyển toàn bộ vùng chọn vào đó (bộ sách: mọi tập trong bộ).
+ * Dùng chung `moveToFolder` với kéo thả: giữ thư mục con cùng tên bộ, bỏ qua tập đã ở đúng chỗ, lô lớn chạy nền.
+ */
+async function moveSelectionToCategory(it) {
+  if (S.ov.config.read_only) return fail('Đang bật chế độ chỉ đọc – tắt trong Cài đặt để di chuyển sách.');
+  const inboxKey = fold(S.ov.config.inbox_name);
+  const opts = [];
+  for (const c of S.ov.categories) {
+    if (fold(c.name) === inboxKey) continue;
+    opts.push(h('option', { value: c.name }, c.name));
+    for (const sf of subfoldersOf(c.name)) opts.push(h('option', { value: sf.rel }, '  '.repeat(sf.depth - 1) + '↳ ' + sf.name));
+  }
+  if (!opts.length) return toast('Chưa có thư mục thể loại nào.');
+  const sel = h('select', { class: 'pill', style: 'width:100%' }, ...opts);
+  // Mặc định chọn thể loại hiện tại của bộ nếu có (dễ chuyển sang thư mục con cùng thể loại).
+  if (it?.category && opts.some((o) => o.value === it.category)) sel.value = it.category;
+  const n = S.sel.size;
+  const title = n > 1 ? `Chuyển ${n} mục vào thư mục thể loại…` : `Chuyển cả bộ “${it.series}” (${it.volumes} tập) vào…`;
+  const ok = await modal({ title, ok: 'Chuyển', content: h('div', { style: 'margin-bottom:16px' }, sel) });
+  if (!ok) return;
+  await moveToFolder(sel.value);
+}
+
 function reportMoves(r) {
   if (r.failures.length) fail(`${r.failures.length} file không di chuyển được: ${r.failures[0].message}`);
   if (r.moved.length) toast(`Đã di chuyển ${r.moved.length} file.`, { action: { label: 'Hoàn tác', run: () => undo(r.batch_id) } });
@@ -1267,15 +1292,17 @@ async function renderDupes() {
 
 // ------------------------------------------------------------------ nghi trùng (E4-06, E4-07)
 let suspectKeys = null;
-const AUTO_SUSPECT = 85; // = dedupe::AUTO_SUSPECT_CONFIDENCE
+/** Ngưỡng tự dọn nghi trùng (Cài đặt) – kẹp như `Config::suspect_auto_threshold` phía Rust. */
+const suspectAuto = () => Math.min(100, Math.max(50, S.ov?.config?.suspect_auto ?? 85));
 async function renderSuspects() {
-  toolbar('Nghi trùng', `cùng tên/ISBN, nội dung khác – nhóm tin cậy ≥${AUTO_SUSPECT}% được tự dọn (trừ nhóm có sách đã xoá trước đây), còn lại cần bạn duyệt`);
+  const AUTO_SUSPECT = suspectAuto();
+  toolbar('Nghi trùng', `cùng tên/ISBN, nội dung khác – nhóm tin cậy ≥${AUTO_SUSPECT}% được tự dọn (giữ bản đề xuất), còn lại cần bạn duyệt`);
   view.replaceChildren(h('div', { class: 'pad muted' }, 'Đang tải…'));
   let groups;
   try { groups = await call('suspect_groups'); } catch (e) { return fail(e); }
   if ((stats()?.suspect_groups || 0) !== groups.length) refreshOverview().catch(fail);
   // Nhóm chắc chắn cao: tự dọn ở nền (một lần mỗi phiên, để lỗi / bấm Dừng không bị chạy lại liên tục).
-  const auto = groups.filter((g) => g.confidence >= AUTO_SUSPECT && !g.has_deleted); // có mục "đã xoá": luôn duyệt tay
+  const auto = groups.filter((g) => g.confidence >= AUTO_SUSPECT); // kể cả nhóm có mục "đã xoá trước đây"
   if (auto.length && !S.autoSuspectsDone && !S.scanning && !CL.el) { startCleanSuspects(); }
   // Còn lại: duyệt tay, nhóm dễ (tin cậy cao) trước.
   groups.sort((a, b) => b.confidence - a.confidence);
@@ -1285,27 +1312,30 @@ async function renderSuspects() {
   const decide = async (decision) => {
     const g = groups[i];
     try { await call('decide', { ids: g.members.map((b) => b.id), decision }); } catch (e) { return fail(e); }
+    // Không hiện toast: duyệt nhanh nhóm kế tiếp, toast chỉ che nút. Lỗi vẫn báo.
     groups.splice(i, 1); i = Math.min(i, groups.length - 1); paint(); refreshOverview().catch(fail);
-    toast(decision === 'keep_both' ? 'Đã ghi “Giữ tất cả”.' : 'Đã ghi “Không trùng”.');
   };
   // Chọn giữ một bản: xoá ngay các bản còn lại (vào Thùng rác Windows – khôi phục được), không hỏi lại, sang nhóm kế.
-  let busy = false;
+  // Xoá chạy nối tiếp ở nền: giao diện sang nhóm kế ngay, không chờ file vào Thùng rác xong (duyệt nhanh liên tục).
+  // Thành công không hiện toast (toast che nút); chỉ báo khi có file không xoá được. Số liệu sidebar cập nhật khi
+  // hàng chờ xoá chạy hết.
+  let queue = Promise.resolve(), pending = 0;
   // Mục "đã xoá trước đây" (id âm) không còn file: chọn nó = xoá mọi bản đang có trong nhóm; chọn giữ một bản đang có
   // thì ghi "Giữ tất cả" với các mục đã xoá để nhóm không hiện lại.
-  const keepOnly = async (b) => {
-    if (busy) return;
-    const g = groups[i], drop = g.members.filter((x) => x.id !== b.id && x.id > 0), ghosts = g.members.filter((x) => x.id < 0);
-    busy = true;
+  const keepOnly = (b) => {
+    const g = groups[i];
+    if (!g || !g.members.includes(b)) return;
+    const drop = g.members.filter((x) => x.id !== b.id && x.id > 0), ghosts = g.members.filter((x) => x.id < 0);
     groups.splice(i, 1); i = Math.max(0, Math.min(i, groups.length - 1)); paint();
-    try {
-      const r = drop.length ? await call('trash_books', { ids: drop.map((x) => x.id) }) : { trashed: 0, freed_bytes: 0, failures: [] };
-      if (b.id > 0 && ghosts.length) await call('decide', { ids: [b.id, ...ghosts.map((x) => x.id)], decision: 'keep_both' });
-      const kept = b.id < 0 ? 'Giữ trạng thái đã xoá' : `Đã giữ “${b.file_name}”`;
-      if (r.failures.length || r.aborted) reportTrash(r);
-      else toast(`${kept}, ${r.trashed} bản vào Thùng rác (${fmtBytes(r.freed_bytes)}).`, { action: { label: 'Mở Thùng rác', run: () => call('open_recycle_bin') } });
-    } catch (e) { fail(e); groups.splice(i, 0, g); paint(); }
-    finally { busy = false; }
-    refreshOverview().catch(fail);
+    pending++;
+    queue = queue.then(async () => {
+      try {
+        const r = drop.length ? await call('trash_books', { ids: drop.map((x) => x.id) }) : { trashed: 0, freed_bytes: 0, failures: [] };
+        if (b.id > 0 && ghosts.length) await call('decide', { ids: [b.id, ...ghosts.map((x) => x.id)], decision: 'keep_both' });
+        if (r.failures.length || r.aborted) reportTrash({ ...r, trashed: 0 });
+      } catch (e) { fail(e); groups.splice(i, 0, g); paint(); }
+      if (--pending === 0) refreshOverview().catch(fail);
+    });
   };
   const paint = () => {
     if (!groups.length) {
@@ -2022,8 +2052,9 @@ function renderSettings() {
         : [h('div', { class: 'muted small' }, 'Chưa chặn thể loại nào.')]),
       h('button', { class: 'btn', style: 'margin-top:6px', onclick: () => openBlockPicker() }, 'Chặn thư mục…')),
       'Sách trong thư mục bị chặn vào Thùng rác; sách mới tự phân loại vào đó cũng vào thẳng Thùng rác, thư mục không được tạo lại. Chặn được cả thư mục con bạn tự chia (vd. “Ngôn tình - Đam mỹ › Đam mỹ”). Cũng mở được bằng chuột phải lên thể loại ở thanh bên.'),
-    field('Ngưỡng tin cậy cao', num('classify_high', 1, 100), 'Đề xuất từ mức này trở lên được tick sẵn.'),
-    field('Ngưỡng trung bình', num('classify_medium', 1, 100), 'Dưới mức này: đưa vào “Cần làm tay”.'),
+    field('Phân loại: ngưỡng tin cậy cao', num('classify_high', 1, 100), 'Chỉ dùng khi đoán thể loại (màn Phân loại, Phân loại Khác): đề xuất từ mức này trở lên được tick sẵn.'),
+    field('Phân loại: ngưỡng trung bình', num('classify_medium', 1, 100), 'Đoán thể loại dưới mức này: đưa vào “Cần làm tay”.'),
+    field('Nghi trùng: ngưỡng tự dọn', num('suspect_auto', 50, 100), 'Nhóm nghi trùng tin cậy từ mức này trở lên (%) được tự dọn – giữ bản đề xuất, bản còn lại vào Thùng rác; dưới mức này chờ bạn duyệt. Mặc định 85, thấp nhất 50.'),
     field('Số luồng băm', num('hash_threads', 1, 16), 'SSD ngoài: 2–4.'),
     field('Giao diện', theme),
     field('Độ chính xác phân loại', h('div', { style: 'display:flex;gap:10px;align-items:center' }, h('button', { class: 'btn', onclick: async () => {
@@ -2036,6 +2067,7 @@ function renderSettings() {
     } }, 'Đo'), evalOut), 'Giấu thư mục của từng cuốn rồi đoán lại (leave-one-out).'),
     h('div', {}, h('button', { class: 'btn primary', onclick: async () => {
       if (c.classify_medium > c.classify_high) return fail('Ngưỡng trung bình phải ≤ ngưỡng cao');
+      if (!(c.suspect_auto >= 50 && c.suspect_auto <= 100)) return fail('Ngưỡng tự dọn nghi trùng phải từ 50 đến 100');
       try { await call('save_config', { config: c }); toast('Đã lưu cài đặt.'); await refreshOverview(); } catch (e) { fail(e); }
     } }, 'Lưu')),
     h('p', { class: 'muted small' }, 'Dữ liệu app: ' + S.ov.home));

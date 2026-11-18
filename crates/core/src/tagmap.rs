@@ -363,12 +363,13 @@ pub fn plan(conn: &Connection, cfg: &Config, opts: &PlanOptions) -> Result<Plan>
         };
         // Phần đường dẫn đi theo sách: dưới thư mục quản lý sâu nhất chứa sách (không có thì dưới thể loại cấp 1).
         // Làm phẳng thư mục con (`subcats.rs`): sách vào thẳng thư mục đích, không mang theo thư mục lạ.
-        let suffix: &[String] = if cfg.flatten_subfolders || names.first().is_none_or(|n| crate::triage::is_other_dir(n)) {
-            &[]
-        } else {
-            let base = managed.iter().filter(|m| under(&keys, m)).map(Vec::len).max().unwrap_or(1).min(names.len());
-            &names[base..]
-        };
+        let suffix: &[String] =
+            if cfg.flatten_subfolders || names.first().is_none_or(|n| crate::triage::is_other_dir(n)) {
+                &[]
+            } else {
+                let base = managed.iter().filter(|m| under(&keys, m)).map(Vec::len).max().unwrap_or(1).min(names.len());
+                &names[base..]
+            };
         let mut to_names = components(&rel);
         to_names.extend(suffix.iter().cloned());
         let to_keys: Vec<String> = to_names.iter().map(|n| blocked::name_key(n)).collect();

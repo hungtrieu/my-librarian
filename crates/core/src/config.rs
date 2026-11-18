@@ -6,6 +6,13 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_INBOX: &str = "Chưa phân loại";
 
+/// Ngưỡng tự dọn nghi trùng mặc định (%): nhóm có độ tin cậy từ mức này trở lên được tự dọn, không cần người duyệt.
+/// Người dùng đổi được trong Cài đặt ([`Config::suspect_auto`]). Ở đây (không ở `dedupe`) vì `dedupe` chỉ có trên
+/// bản máy tính còn cấu hình dùng chung với iPad.
+pub const AUTO_SUSPECT_CONFIDENCE: u8 = 85;
+/// Ngưỡng tự dọn nghi trùng thấp nhất cho phép đặt.
+pub const MIN_SUSPECT_AUTO: u8 = 50;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -51,6 +58,10 @@ pub struct Config {
     /// Ngưỡng tin cậy phân loại (E6-04).
     pub classify_high: u8,
     pub classify_medium: u8,
+    /// Nhóm nghi trùng có độ tin cậy từ mức này trở lên được tự dọn (giữ bản đề xuất), dưới mức này chờ người
+    /// duyệt. Mặc định [`AUTO_SUSPECT_CONFIDENCE`]; không bao giờ thấp hơn
+    /// [`MIN_SUSPECT_AUTO`] (xem [`Config::suspect_auto_threshold`]).
+    pub suspect_auto: u8,
     /// Số luồng băm (SSD ngoài: 2–4 là hợp lý; chốt ở S5).
     pub hash_threads: usize,
 }
@@ -73,6 +84,7 @@ impl Default for Config {
             flatten_subfolders: true,
             classify_high: 75,
             classify_medium: 45,
+            suspect_auto: AUTO_SUSPECT_CONFIDENCE,
             hash_threads: 3,
         }
     }
@@ -99,6 +111,12 @@ impl Config {
         }
         let s = std::fs::read_to_string(p)?;
         Ok(serde_json::from_str(&s)?)
+    }
+
+    /// Ngưỡng tự dọn nghi trùng đang dùng: `suspect_auto` kẹp trong `MIN_SUSPECT_AUTO..=100` (file cấu hình sửa tay
+    /// thành 0 không làm app xoá mọi nhóm nghi trùng).
+    pub fn suspect_auto_threshold(&self) -> u8 {
+        self.suspect_auto.clamp(MIN_SUSPECT_AUTO, 100)
     }
 
     pub fn save(&self, home: &Path) -> Result<()> {

@@ -54,7 +54,7 @@ books.forEach((b, i) => {
         : b.category === 'Ngôn tình - Đam mỹ' ? (b.series === 'Đam mỹ' ? 'Đam mỹ; Romance' : 'Ngôn tình; Romance') : '';
 });
 const present = () => books.filter((b) => !b.gone);
-let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_triage: true, auto_reject_deleted: true, blocked_categories: [], tag_map: [], subcategories: ['Văn học/Nguyễn Nhật Ánh', 'Ngôn tình - Đam mỹ/Đam mỹ'], flatten_subfolders: true, extra_libraries: ['G:\\sach'], min_free_gb: 20, classify_high: 75, classify_medium: 45, hash_threads: 3 };
+let config = { library_root: 'E:\\books', inbox_name: 'Chưa phân loại', extra_roots: [], exclude_names: ['$RECYCLE.BIN'], read_only: false, auto_triage: true, auto_reject_deleted: true, blocked_categories: [], tag_map: [], subcategories: ['Văn học/Nguyễn Nhật Ánh', 'Ngôn tình - Đam mỹ/Đam mỹ'], flatten_subfolders: true, extra_libraries: ['G:\\sach'], min_free_gb: 20, classify_high: 75, classify_medium: 45, suspect_auto: 85, hash_threads: 3 };
 const decided = new Set();
 const TEXT = new Set(['epub', 'mobi', 'prc', 'azw', 'azw3', 'kf8', 'fb2', 'txt']);
 // Hai thiết bị mẫu; ?nodevices=1 để xem lúc chưa ghép.

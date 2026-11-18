@@ -40,7 +40,11 @@ fn setup() -> Env {
     let books = tmp.path().join("books");
     epub(&books.join("Văn học").join("Mắt biếc.epub"), "Mắt biếc", "Nguyễn Nhật Ánh");
     epub(&books.join("Văn học").join("Tôi thấy hoa vàng.epub"), "Tôi thấy hoa vàng trên cỏ xanh", "Nguyễn Nhật Ánh");
-    epub(&books.join("Kỹ năng").join("Tuổi trẻ đáng giá bao nhiêu.epub"), "Tuổi trẻ đáng giá bao nhiêu", "Rosie Nguyễn");
+    epub(
+        &books.join("Kỹ năng").join("Tuổi trẻ đáng giá bao nhiêu.epub"),
+        "Tuổi trẻ đáng giá bao nhiêu",
+        "Rosie Nguyễn",
+    );
     epub(&books.join("Kỹ năng").join("Nhà giả kim.epub"), "Kỹ năng sống – nhà giả kim", "Paulo Coelho");
     epub(&books.join("Truyện tranh").join("Doraemon 1.epub"), "Doraemon 1", "Fujiko F. Fujio");
     let other = books.join("Khác");
@@ -65,8 +69,7 @@ fn id_of(e: &Env, file: &str) -> i64 {
 }
 
 fn dir_of(e: &Env, file: &str) -> String {
-    let p: String =
-        e.lib.conn.query_row("SELECT path FROM books WHERE file_name = ?1", [file], |r| r.get(0)).unwrap();
+    let p: String = e.lib.conn.query_row("SELECT path FROM books WHERE file_name = ?1", [file], |r| r.get(0)).unwrap();
     assert!(Path::new(&p).is_file());
     Path::new(&p).parent().unwrap().file_name().unwrap().to_string_lossy().into_owned()
 }
@@ -89,7 +92,8 @@ fn similar_books_without_metadata_follow_a_manual_move() {
     assert_eq!(s.len(), 1);
     let a = &s[0].criteria[0];
     assert_eq!((a.criterion.kind.as_str(), a.books), ("author", 2), "{s:?}");
-    let plan = similar::plan_similar(&e.lib.conn, &e.lib.config, &s[0].target, &[a.criterion.clone()]).unwrap();
+    let plan =
+        similar::plan_similar(&e.lib.conn, &e.lib.config, &s[0].target, std::slice::from_ref(&a.criterion)).unwrap();
     assert_eq!(plan.moves.len(), 2);
     let r = tagmap::apply_kind(&e.lib.conn, &e.lib.config, &plan, similar::OTHER_KIND, None, None).unwrap();
     assert_eq!(r.moved.len(), 2);

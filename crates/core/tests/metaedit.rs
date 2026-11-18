@@ -20,7 +20,11 @@ fn edit_writes_epub_and_survives_rescan() {
     std::env::set_var("LIBRARIAN_HOME", tmp.path().join("home"));
     let books = tmp.path().join("books");
     let ep = books.join("Văn học").join("x.epub");
-    testdata::write_epub(&ep, &testdata::EpubSpec { title: "Cũ", authors: &["Ai"], subjects: &[], isbn: None, language: "en", body: "b" }).unwrap();
+    testdata::write_epub(
+        &ep,
+        &testdata::EpubSpec { title: "Cũ", authors: &["Ai"], subjects: &[], isbn: None, language: "en", body: "b" },
+    )
+    .unwrap();
     let txt = books.join("Văn học").join("y.txt");
     std::fs::write(&txt, "noi dung").unwrap();
     let trash = KeepTrash(tmp.path().join("trash"), RefCell::new(0));
@@ -29,7 +33,9 @@ fn edit_writes_epub_and_survives_rescan() {
     lib.set_library_root(&books).unwrap();
     lib.config.auto_triage = false;
     report::run_analysis(&lib.conn, &lib.config, "app", None, Some(&trash)).unwrap();
-    let id = |f: &str| -> i64 { lib.conn.query_row("SELECT id FROM books WHERE file_name = ?1", [f], |r| r.get(0)).unwrap() };
+    let id = |f: &str| -> i64 {
+        lib.conn.query_row("SELECT id FROM books WHERE file_name = ?1", [f], |r| r.get(0)).unwrap()
+    };
     let m = MetaEdit {
         title: "Mắt biếc".into(),
         authors: vec!["Nguyễn Nhật Ánh".into()],
@@ -46,7 +52,15 @@ fn edit_writes_epub_and_survives_rescan() {
     assert_eq!(md.title.as_deref(), Some("Mắt biếc"));
     assert_eq!(md.subjects, vec!["Văn học", "Tuổi học trò"]);
     // TXT: chỉ trong thư viện.
-    let r = metaedit::edit(&lib.conn, &lib.config, &trash, id("y.txt"), &MetaEdit { title: "Ghi chép".into(), authors: vec!["Tôi".into()], ..Default::default() }, true).unwrap();
+    let r = metaedit::edit(
+        &lib.conn,
+        &lib.config,
+        &trash,
+        id("y.txt"),
+        &MetaEdit { title: "Ghi chép".into(), authors: vec!["Tôi".into()], ..Default::default() },
+        true,
+    )
+    .unwrap();
     assert!(!r.written && r.note.is_some());
     // Quét lại (file đổi nội dung → đọc lại metadata): thông tin đã sửa vẫn giữ.
     std::fs::write(&txt, "noi dung moi hon").unwrap();
@@ -54,5 +68,8 @@ fn edit_writes_epub_and_survives_rescan() {
     let b = db::get_book(&lib.conn, id("y.txt")).unwrap().unwrap();
     assert_eq!((b.title.as_str(), b.authors.as_str()), ("Ghi chép", "Tôi"));
     let b = db::get_book(&lib.conn, id("x.epub")).unwrap().unwrap();
-    assert_eq!((b.title.as_str(), b.series.as_deref(), b.volume, b.subjects.as_str()), ("Mắt biếc", Some("Truyện dài"), Some(2), "Văn học; Tuổi học trò"));
+    assert_eq!(
+        (b.title.as_str(), b.series.as_deref(), b.volume, b.subjects.as_str()),
+        ("Mắt biếc", Some("Truyện dài"), Some(2), "Văn học; Tuổi học trò")
+    );
 }

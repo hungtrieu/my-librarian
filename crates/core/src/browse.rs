@@ -222,9 +222,10 @@ pub fn query(conn: &Connection, q: &Query) -> Result<Page> {
     let rows = st.query_map(params_from_iter(args.iter()), card)?.collect::<rusqlite::Result<Vec<_>>>()?;
     let cat_key = q.category.as_deref().map(fold);
     let author_key = q.author.as_deref().map(crate::normalize::normalize_author);
-    let folder_keys: Option<Vec<String>> = q.folder.as_deref().map(|f| {
-        f.split(['/', '\\']).filter(|c| !c.trim().is_empty()).map(crate::normalize::simple_key).collect()
-    });
+    let folder_keys: Option<Vec<String>> = q
+        .folder
+        .as_deref()
+        .map(|f| f.split(['/', '\\']).filter(|c| !c.trim().is_empty()).map(crate::normalize::simple_key).collect());
     let mut books: Vec<BookCard> = rows
         .into_iter()
         .filter(|(b, _)| match &cat_key {

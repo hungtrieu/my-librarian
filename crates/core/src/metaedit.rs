@@ -152,7 +152,8 @@ pub fn edit(
     }
     apply_db(&tx, id, &m)?;
     tx.execute("UPDATE books SET user_meta = ?2 WHERE id = ?1", params![id, serde_json::to_string(&m)?])?;
-    let what = if rep.written { "ghi vào file; bản gốc vào Thùng rác" } else { "chỉ sửa trong thư viện" };
+    let what =
+        if rep.written { "ghi vào file; bản gốc vào Thùng rác" } else { "chỉ sửa trong thư viện" };
     db::log_op(&tx, batch, KIND, Some(id), &b.path, Some(&b.path), Some(b.size), "done", Some(what))?;
     tx.commit()?;
     if rep.written {
@@ -317,7 +318,8 @@ pub fn set_opf_metadata(opf: &str, m: &MetaEdit) -> std::result::Result<String, 
         let id_re = rx(r"(?s)(<(?:[\w.-]+:)?identifier\b[^>]*>)(.*?)(</(?:[\w.-]+:)?identifier\s*>)");
         body = id_re
             .replace_all(&body, |c: &regex::Captures| {
-                let is_isbn = c[1].to_ascii_lowercase().contains("isbn") || c[2].to_ascii_lowercase().contains("isbn")
+                let is_isbn = c[1].to_ascii_lowercase().contains("isbn")
+                    || c[2].to_ascii_lowercase().contains("isbn")
                     || formats::normalize_isbn(&c[2]).is_some();
                 if is_isbn && !isbn_done {
                     isbn_done = true;

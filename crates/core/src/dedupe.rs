@@ -1,5 +1,6 @@
 //! Trùng chắc chắn (E4-02, E4-03) và nghi trùng (E4-04..E4-06).
-//! Quy tắc: SHA-256 giống nhau được dọn hàng loạt; nghi trùng có độ tin cậy ≥ [`AUTO_SUSPECT_CONFIDENCE`]% được
+//! Quy tắc: SHA-256 giống nhau được dọn hàng loạt; nghi trùng có độ tin cậy ≥ ngưỡng `Config::suspect_auto`
+//! (mặc định [`AUTO_SUSPECT_CONFIDENCE`]%) được
 //! tự dọn (giữ bản tốt nhất), phần còn lại qua người duyệt.
 
 use crate::config::Config;
@@ -156,12 +157,11 @@ pub struct SuspectGroup {
     /// Bản đề xuất giữ lại (xem [`choose_suspect_keeper`]) – luôn là sách đang có, không bao giờ là mục "đã xoá".
     pub keeper_id: i64,
     /// Nhóm có mục "đã xoá trước đây" (id âm, `status = "deleted"`, xem deleted.rs): sách mới tải về gần giống một
-    /// cuốn người dùng đã xoá. Không tự dọn – luôn để người dùng duyệt.
+    /// cuốn người dùng đã xoá. Vẫn tự dọn khi đủ tin cậy (giữ bản đang có), xem [`clean_suspects_with`].
     pub has_deleted: bool,
 }
 
-/// Nhóm nghi trùng có độ tin cậy từ ngưỡng này trở lên được tự dọn, không cần người duyệt.
-pub const AUTO_SUSPECT_CONFIDENCE: u8 = 85;
+pub use crate::config::{AUTO_SUSPECT_CONFIDENCE, MIN_SUSPECT_AUTO};
 
 /// Độ tin cậy (0..100) hai file cùng định dạng là cùng một cuốn, dựa trên ISBN, tên chuẩn hoá, tác giả,
 /// bộ/tập, dung lượng và số trang. Chỉ chạm ngưỡng tự dọn khi có bằng chứng mạnh: cùng ISBN, hoặc cùng tên + cùng
@@ -246,6 +246,8 @@ pub fn choose_suspect_keeper(members: &[Book], library_root_ids: &[i64]) -> usiz
 
 /// Tự dọn các nhóm nghi trùng có độ tin cậy ≥ `min_confidence`: giữ [`SuspectGroup::keeper_id`], đưa các bản còn
 /// lại vào Thùng rác (mỗi file được kiểm tra chưa đổi kể từ lúc quét, bản giữ được kiểm tra còn nguyên).
+/// Nhóm có mục "đã xoá trước đây" cũng được tự dọn: bản giữ luôn là sách đang có, mục đã xoá (không còn file) được
+/// ghi "Giữ tất cả" với bản giữ để nhóm không hiện lại.
 /// Báo tiến trình bước `trash` x / y và dừng được giữa chừng như dọn trùng chắc chắn.
 pub fn clean_suspects_with(
     conn: &Connection,
@@ -260,7 +262,7 @@ pub fn clean_suspects_with(
     let keepers: Vec<(usize, Book)> = groups
         .iter()
         .enumerate()
-        .filter(|(_, g)| g.confidence >= min_confidence && !g.has_deleted)
+        .filter(|(_, g)| g.confidence >= min_confidence)
         .filter_map(|(gi, g)| {
             let k = g.members.iter().find(|b| b.id == g.keeper_id)?;
             Some((gi, Book { hash_size: Some(k.size), hash_mtime: Some(k.mtime), ..k.clone() }))
@@ -269,7 +271,8 @@ pub fn clean_suspects_with(
     let mut items = Vec::new();
     for (gi, keeper) in &keepers {
         let g = &groups[*gi];
-        for o in g.members.iter().filter(|b| b.id != keeper.id) {
+        // Mục "đã xoá trước đây" (id âm) không còn file – không có gì để đưa vào Thùng rác.
+        for o in g.members.iter().filter(|b| b.id != keeper.id && b.id > 0) {
             items.push(TrashItem {
                 book: o,
                 expect: Some((o.size, o.mtime)),
@@ -278,7 +281,18 @@ pub fn clean_suspects_with(
             });
         }
     }
-    trash_items_with(conn, cfg, trasher, "dedupe_suspect", &items, cancel, on)
+    let rep = trash_items_with(conn, cfg, trasher, "dedupe_suspect", &items, cancel, on)?;
+    if !rep.cancelled && rep.aborted.is_none() {
+        for (gi, keeper) in &keepers {
+            let g = &groups[*gi];
+            if g.has_deleted {
+                let mut ids = vec![keeper.id];
+                ids.extend(g.members.iter().filter(|b| b.id < 0).map(|b| b.id));
+                decide(conn, &ids, Decision::KeepBoth)?;
+            }
+        }
+    }
+    Ok(rep)
 }
 
 fn is_comic(b: &Book) -> bool {
